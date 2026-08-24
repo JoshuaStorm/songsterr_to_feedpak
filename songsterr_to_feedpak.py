@@ -283,6 +283,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     anchor_min_width = 4
     anchor_min_fret = -1
     anchor_max_fret = -1
+    hopo_from = {}
 
     for measure_num, measure in enumerate(track.measures):
         beats = measure["voices"][0]["beats"]
@@ -305,16 +306,19 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             for note in beat["notes"]:
                 if note.get("rest"):
                     continue
+                string = len(track.tuning.strings) - note["string"] - 1
+                fret = note["fret"]
                 duration_semibreves = (note["duration"][0] / note["duration"][1]) if note.get("duration") else 0
+                hopo_delta = fret - hopo_from.get(string, fret)
                 simultaneous_notes.append({
-                    "s": len(track.tuning.strings) - note["string"] - 1, # String number
-                    "f": note["fret"], # Fret number
+                    "s": string, # String number
+                    "f": fret, # Fret number
                     "sus": duration_semibreves * secs_per_semibreve if duration_semibreves >= 0.5 else 0, # Sustain in seconds TODO: fix
                     "sl": -1, # Pitched slide to fret
                     "slu": -1, # Unpitched slide to fret
                     "bn": (note["bend"]["tone"] / 50) if note.get("bend") else 0, # Bend amount in semitones
-                    "ho": note.get("hp", False), # Hammer-on
-                    "po": False, # Pull-off
+                    "ho": hopo_delta > 0, # Hammer-on
+                    "po": hopo_delta < 0, # Pull-off
                     "hm": note.get("harmonic") == "natural", # Natural harmonic
                     "hp": note.get("harmonic") == "artificial", # Pinch harmonic
                     "pm": note.get("palmMute", False), # Palm mute
@@ -323,6 +327,10 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "tr": False, # Tremolo
                     "ac": False, # Accent
                 })
+                if string in hopo_from:
+                    del hopo_from[string]
+                if note.get("hp", False):
+                    hopo_from[string] = fret
 
             if len(simultaneous_notes) == 1:
                 simultaneous_notes[0]["t"] = t

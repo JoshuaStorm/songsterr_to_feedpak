@@ -353,7 +353,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "ho": hopo_delta > 0, # Hammer-on
                     "po": hopo_delta < 0, # Pull-off
                     "hm": note.get("harmonic") == "natural", # Natural harmonic
-                    "hp": note.get("harmonic") == "artificial", # Pinch harmonic
+                    "hp": note.get("harmonic") in ("pinch", "artificial"), # Pinch harmonic
                     "pm": note.get("palmMute", False), # Palm mute
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato

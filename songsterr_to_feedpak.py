@@ -121,7 +121,7 @@ def _extract_song_data(html_text: str):
         song_id=data["songId"],
         revision=data["revisionId"],
         image=data["image"],
-        track_names=[t["instrument"] for t in data["tracks"]],
+        track_names=[t["name"] for t in data["tracks"]],
         track_difficulties=[t.get("difficulty") for t in data["tracks"]],
         tags=data["tags"],
         artist=data["artist"],
@@ -249,7 +249,7 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
         tracks = []
         for track in result["tracks"]:
             tracks.append(SongsterrTrackSearchResult(
-                track_name=track["instrument"],
+                track_name=track["name"],
                 tuning=Tuning([n - 40 for n in track["tuning"]]) if track.get("tuning") else None,
                 difficulty=track.get("difficulty"),
             ))
@@ -263,9 +263,6 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
 
 async def download_youtube_mp3(video_id: str) -> Mp3:
     # TODO: make async
-    url = f'https://www.youtube.com/watch?v={video_id}'
-    print(f"Downloading {url}")
-
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_file =  os.path.join(tmp_dir, video_id)
         ydl_opts = {
@@ -280,7 +277,7 @@ async def download_youtube_mp3(video_id: str) -> Mp3:
         tmp_file += '.mp3'
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
 
         duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
@@ -364,7 +361,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 simultaneous_notes.append({
                     "s": string, # String number
                     "f": fret, # Fret number
-                    "sus": duration_semibreves * secs_per_semibreve, # Sustain in seconds TODO: fix
+                    "sus": duration_semibreves * secs_per_semibreve, # Sustain in seconds
                     "sus_threshold": secs_per_semibreve / 4, # [Internal] minimum sustain
                     "sl": -1, # Pitched slide to fret (filled in later)
                     "slu": fret - 5 if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
@@ -510,9 +507,9 @@ async def _handle_search(args):
 async def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--download", "-d", type=int, help="The Songsterr song ID to download.")
+    group.add_argument("--download", "-D", type=int, help="The Songsterr song ID to download.")
     group.add_argument("--search", "-s", type=str, help="The search query to find songs on Songsterr.")
-    group.add_argument("--search-and-download", "-D", type=str, help="Search for a song and download the first result. This is a convenience option that combines --search and --download.")
+    group.add_argument("--search-and-download", "-d", type=str, help="Search for a song and download the first result. This is a convenience option that combines --search and --download.")
     parser.add_argument("--output", "-o", type=str, help="The output file to save the downloaded song data (JSON format). Only valid with --download.")
     parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak to a folder instead of a single file. Only valid with --download.")
     args = parser.parse_args()

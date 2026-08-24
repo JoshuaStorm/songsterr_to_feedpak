@@ -98,9 +98,14 @@ class _SongData:
             self.title = title
 
 class _TrackData:
-    def __init__(self, string_count: int, tuning: Optional[Tuning], measures: list[dict]):
+    def __init__(self,
+                 string_count: int,
+                 tuning: Optional[Tuning],
+                 capo: int,
+                 measures: list[dict]):
         self.string_count = string_count
         self.tuning = tuning
+        self.capo = capo
         self.measures = measures
 
 class _VideoSyncData:
@@ -129,6 +134,7 @@ def _extract_track_data(text: str):
         string_count=json_data["strings"],
         tuning=Tuning([n - 40 for n in json_data["tuning"]])
                       if json_data.get("tuning") else None,
+        capo=json_data.get("capo", 0),
         measures=json_data["measures"],
     )
 
@@ -160,12 +166,14 @@ class SongsterrTrack:
                  track_id: int,
                  track_name: str,
                  tuning: Optional[Tuning],
+                 capo: int,
                  difficulty: Optional[int],
                  measures: list[dict]):
         self.song = song
         self.track_id = track_id
         self.track_name = track_name
         self.tuning = tuning
+        self.capo = capo
         self.difficulty = difficulty
         self.measures = measures
 
@@ -227,6 +235,7 @@ async def _download_songsterr_song(song_id: int) -> SongsterrSong:
             track_name=track_name,
             tuning=track_data.tuning,
             difficulty=track_difficulty,
+            capo=track_data.capo,
             measures=track_data.measures,
         ))
     return song
@@ -367,7 +376,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "pm": palm_mute, # Palm mute
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato
-                    "tr": False, # Tremolo
+                    "tr": False, # Tremolo (not implemented)
                     "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent
                 })
 
@@ -413,7 +422,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     return json.dumps({
         "name": track.track_name,
         "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
-        "capo": 0, # TODO
+        "capo": track.capo,
         "notes": fp_notes,
         "chords": fp_chords,
         "anchors": fp_anchors,
@@ -435,7 +444,7 @@ def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
                 "name": track.track_name,
                 "file": _get_arrangement_filename(track),
                 "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
-                "capo": 0,
+                "capo": track.capo,
                 "centOffset": 0,
             } for track in song.tracks
         ],

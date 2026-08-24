@@ -326,6 +326,8 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 if note.get("rest"):
                     continue
                 string = len(track.tuning.strings) - note["string"] - 1
+                if "fret" not in note:
+                    continue
                 fret = note["fret"]
                 duration_semibreves = (note["duration"][0] / note["duration"][1]) if note.get("duration") else 0
                 hopo_delta = fret - hopo_from.get(string, fret)

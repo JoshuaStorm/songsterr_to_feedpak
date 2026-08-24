@@ -297,7 +297,8 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     anchor_min_fret = -1
     anchor_max_fret = -1
     hopo_from = {}
-    slides = {}
+    slides = set()
+    prev_notes = {}
 
     for measure_num, measure in enumerate(track.measures):
         beats = measure["voices"][0]["beats"]
@@ -334,23 +335,28 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             })
 
         for beat in beats:
+            duration_semibreves = (beat["duration"][0] / beat["duration"][1]) if "duration" in beat else 0
+            palm_mute = beat.get("palmMute", False)
             simultaneous_notes = []
             for note in beat["notes"]:
-                if note.get("rest") or "fret" not in note or "tie" in note:
+                if ("rest" in note) or ("fret" not in note):
+                    continue
+                string = len(track.tuning.strings) - note["string"] - 1
+                if "tie" in note:
+                    prev_notes[string]["sus"] += duration_semibreves * secs_per_semibreve
                     continue
 
-                string = len(track.tuning.strings) - note["string"] - 1
                 fret = note["fret"]
-                duration_semibreves = (note["duration"][0] / note["duration"][1]) if note.get("duration") else 0
                 hopo_delta = fret - hopo_from.get(string, fret)
                 if string in slides:
-                    slides[string]["sl"] = fret
-                    del slides[string]
+                    prev_notes[string]["sl"] = fret
+                    slides.remove(string)
 
                 simultaneous_notes.append({
                     "s": string, # String number
                     "f": fret, # Fret number
-                    "sus": duration_semibreves * secs_per_semibreve if duration_semibreves >= 0.5 else 0, # Sustain in seconds TODO: fix
+                    "sus": duration_semibreves * secs_per_semibreve, # Sustain in seconds TODO: fix
+                    "sus_threshold": secs_per_semibreve / 4, # [Internal] minimum sustain
                     "sl": -1, # Pitched slide to fret (filled in later)
                     "slu": fret - 5 if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
                     "bn": (note["bend"]["tone"] / 50) if note.get("bend") else 0, # Bend amount in semitones
@@ -358,7 +364,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "po": hopo_delta < 0, # Pull-off
                     "hm": note.get("harmonic") == "natural", # Natural harmonic
                     "hp": note.get("harmonic") in ("pinch", "artificial"), # Pinch harmonic
-                    "pm": note.get("palmMute", False), # Palm mute
+                    "pm": palm_mute, # Palm mute
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato
                     "tr": False, # Tremolo
@@ -370,7 +376,8 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 if note.get("hp", False):
                     hopo_from[string] = fret
                 if note.get("slide") in ("legato", "shift"):
-                    slides[string] = simultaneous_notes[-1]
+                    slides.add(string)
+                prev_notes[string] = simultaneous_notes[-1]
 
             if len(simultaneous_notes) == 1:
                 simultaneous_notes[0]["t"] = t
@@ -397,6 +404,11 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     })
 
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
+
+    for note in fp_notes + [n for chord in fp_chords for n in chord["notes"]]:
+        if note["sus"] <= note["sus_threshold"] and note["sl"] == -1 and note["slu"] == -1:
+            note["sus"] = 0
+        del note["sus_threshold"]
 
     return json.dumps({
         "name": track.track_name,

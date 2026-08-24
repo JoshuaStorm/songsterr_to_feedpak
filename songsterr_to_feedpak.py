@@ -343,6 +343,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         for beat in beats:
             duration_semibreves = (beat["duration"][0] / beat["duration"][1]) if "duration" in beat else 0
             palm_mute = beat.get("palmMute", False)
+            tremelo = beat.get("tremolo", False)
             simultaneous_notes = []
             for note in beat["notes"]:
                 if ("rest" in note) or ("fret" not in note):
@@ -373,7 +374,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "pm": palm_mute, # Palm mute
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato
-                    "tr": False, # Tremolo (not implemented)
+                    "tr": tremelo, # Tremolo
                     "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent
                 })
 
@@ -412,7 +413,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
 
     for note in fp_notes + [n for chord in fp_chords for n in chord["notes"]]:
-        if note["sus"] <= note["sus_threshold"] and note["sl"] == -1 and note["slu"] == -1:
+        if note["sus"] <= note["sus_threshold"] and note["sl"] == -1 and note["slu"] == -1 and not note["tr"]:
             note["sus"] = 0
         del note["sus_threshold"]
 

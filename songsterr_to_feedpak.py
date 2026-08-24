@@ -289,6 +289,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_chords = []
     fp_anchors = []
     fp_sections = []
+    fp_beats = []
 
     secs_per_semibreve = 15 / 100 # 100 bpm
     t = 0
@@ -321,6 +322,15 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 "time": t,
             })
 
+        fp_beats.append({
+            "time": t,
+            "measure": measure_num + 1,
+        })
+        for i in range(1, int(semibreves_in_measure * 4)):
+            fp_beats.append({
+                "time": t + (i * secs_per_semibreve / 4),
+                "measure": -1,
+            })
 
         for beat in beats:
             simultaneous_notes = []
@@ -390,6 +400,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         "anchors": fp_anchors,
         "handshapes": [],
         "templates": [],
+        "beats": fp_beats,
         "sections": fp_sections,
     }, indent=2)
 

@@ -43,6 +43,9 @@ _TuningShape.BASS_STD = _TuningShape([-5, -5, -5],
 
 class Tuning:
     def __init__(self, strings: list[int]):
+        """
+        strings: Top string first. 0 = Low E string of E STD.
+        """
         self.strings = strings
         deltas = [strings[i + 1] - strings[i] for i in range(len(strings) - 1)]
         for shape in [_TuningShape.STD, _TuningShape.DROP, _TuningShape.BASS_STD]:
@@ -53,6 +56,12 @@ class Tuning:
             shape = _TuningShape(deltas,
                                       lambda strings: " ".join(get_note_name(n) for n in strings))
         self.name = shape.formatter(strings)
+
+_STANDARD_TUNING = [-10, -5, 0, 5, 10, 15, 19, 24]
+
+def _tuning_subtract(lhs: list[int], rhs: list[int]) -> list[int]:
+    cmp_len = min(len(lhs), len(rhs))
+    return [l - r for l, r in zip(lhs[-cmp_len:], rhs[-cmp_len:])]
 
 def _get_song_url(song_id: int) -> str:
     return f"https://www.songsterr.com/a/wsa/s{song_id}"
@@ -360,7 +369,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
 
     return json.dumps({
         "name": track.track_name,
-        "tuning": list(reversed(track.tuning.strings)),
+        "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
         "capo": 0, # TODO
         "notes": fp_notes,
         "chords": fp_chords,
@@ -380,7 +389,7 @@ def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
                 "id": f"{track.track_id}_{_to_valid_filename(track.track_name)}",
                 "name": track.track_name,
                 "file": _get_arrangement_filename(track),
-                "tuning": list(reversed(track.tuning.strings)),
+                "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
                 "capo": 0,
                 "centOffset": 0,
             } for track in song.tracks

@@ -134,9 +134,11 @@ def _extract_track_data(text: str):
 
 def _extract_video_sync_data(text: str):
     json_data = json.loads(text)
+    non_feature_videos = [v for v in json_data if not v.get("feature")]
+    video = non_feature_videos[0] if non_feature_videos else json_data[0]
     return _VideoSyncData(
-        video_id=json_data[0]["videoId"],
-        measure_times=json_data[0]["points"],
+        video_id=video["videoId"],
+        measure_times=video["points"],
     )
 
 class SongsterrTrackSearchResult:

@@ -484,12 +484,14 @@ async def _handle_search(args):
             if "guitar" in track.track_name.lower() or "bass" in track.track_name.lower():
                 tuning_name = f" ({track.tuning.name})" if track.tuning else ""
                 print(f"    - {track.track_name}{tuning_name}")
+    return results
 
 async def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--download", "-d", type=int, help="The Songsterr song ID to download.")
     group.add_argument("--search", "-s", type=str, help="The search query to find songs on Songsterr.")
+    group.add_argument("--search-and-download", "-D", type=str, help="Search for a song and download the first result. This is a convenience option that combines --search and --download.")
     parser.add_argument("--output", "-o", type=str, help="The output file to save the downloaded song data (JSON format). Only valid with --download.")
     parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak to a folder instead of a single file. Only valid with --download.")
     args = parser.parse_args()
@@ -498,6 +500,11 @@ async def main():
         await _handle_download(args)
     elif args.search:
         await _handle_search(args)
-
+    elif args.search_and_download:
+        args.search = args.search_and_download
+        results = await _handle_search(args)
+        args.download = results[0].song_id
+        await _handle_download(args)
+        
 if __name__ == "__main__":
     asyncio.run(main())

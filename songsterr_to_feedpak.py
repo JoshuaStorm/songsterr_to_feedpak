@@ -297,6 +297,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     anchor_min_fret = -1
     anchor_max_fret = -1
     hopo_from = {}
+    slides = {}
 
     for measure_num, measure in enumerate(track.measures):
         beats = measure["voices"][0]["beats"]
@@ -335,20 +336,23 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         for beat in beats:
             simultaneous_notes = []
             for note in beat["notes"]:
-                if note.get("rest"):
+                if note.get("rest") or "fret" not in note or "tie" in note:
                     continue
+
                 string = len(track.tuning.strings) - note["string"] - 1
-                if "fret" not in note or "tie" in note:
-                    continue
                 fret = note["fret"]
                 duration_semibreves = (note["duration"][0] / note["duration"][1]) if note.get("duration") else 0
                 hopo_delta = fret - hopo_from.get(string, fret)
+                if string in slides:
+                    slides[string]["sl"] = fret
+                    del slides[string]
+
                 simultaneous_notes.append({
                     "s": string, # String number
                     "f": fret, # Fret number
                     "sus": duration_semibreves * secs_per_semibreve if duration_semibreves >= 0.5 else 0, # Sustain in seconds TODO: fix
-                    "sl": -1, # Pitched slide to fret
-                    "slu": -1, # Unpitched slide to fret
+                    "sl": -1, # Pitched slide to fret (filled in later)
+                    "slu": fret - 5 if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
                     "bn": (note["bend"]["tone"] / 50) if note.get("bend") else 0, # Bend amount in semitones
                     "ho": hopo_delta > 0, # Hammer-on
                     "po": hopo_delta < 0, # Pull-off
@@ -360,10 +364,13 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "tr": False, # Tremolo
                     "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent
                 })
+
                 if string in hopo_from:
                     del hopo_from[string]
                 if note.get("hp", False):
                     hopo_from[string] = fret
+                if note.get("slide") in ("legato", "shift"):
+                    slides[string] = simultaneous_notes[-1]
 
             if len(simultaneous_notes) == 1:
                 simultaneous_notes[0]["t"] = t

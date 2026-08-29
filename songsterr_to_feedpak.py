@@ -505,6 +505,14 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             note["sus"] -= secs_per_beat * CONFIG_SUSTAIN_MARGIN_BEATS
         del note["spsb"]
 
+    # Add a default section if there are no sections
+    if not fp_sections:
+        fp_sections.append({
+            "name": "Song",
+            "number": 1,
+            "time": 0,
+        })
+
     return json.dumps({
         "name": track.name,
         "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),

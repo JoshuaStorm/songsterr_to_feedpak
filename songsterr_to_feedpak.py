@@ -520,6 +520,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
 
 def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
     manifest = {
+        "songsterr_to_feedpak_version": "0.0.0",
         "feedpak_version": "1.0.0",
         "title": song.title,
         "artist": song.artist,

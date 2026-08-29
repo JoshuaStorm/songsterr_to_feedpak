@@ -83,7 +83,8 @@ class _SongData:
                  song_id: int,
                  revision: int,
                  image: str,
-                 track_names: list[str],
+                 names: list[str],
+                 instruments: list[str],
                  track_difficulties: list[Optional[int]],
                  tags: list[str],
                  artist: str,
@@ -91,7 +92,8 @@ class _SongData:
             self.song_id = song_id
             self.revision = revision
             self.image = image
-            self.track_names = track_names
+            self.names = names
+            self.instruments = instruments
             self.track_difficulties = track_difficulties
             self.tags = tags
             self.artist = artist
@@ -121,7 +123,8 @@ def _extract_song_data(html_text: str):
         song_id=data["songId"],
         revision=data["revisionId"],
         image=data["image"],
-        track_names=[t["name"] for t in data["tracks"]],
+        names=[t["name"] for t in data["tracks"]],
+        instruments=[t["instrument"] for t in data["tracks"]],
         track_difficulties=[t.get("difficulty") for t in data["tracks"]],
         tags=data["tags"],
         artist=data["artist"],
@@ -147,9 +150,23 @@ def _extract_video_sync_data(text: str):
         measure_times=video["points"],
     )
 
+class Instrument:
+    GUITAR = "guitar"
+    BASS = "bass"
+    OTHER = "other"
+
+def _get_instrument_type(instrument: str) -> str:
+    if "guitar" in instrument.lower():
+        return Instrument.GUITAR
+    elif "bass" in instrument.lower():
+        return Instrument.BASS
+    else:
+        return Instrument.OTHER
+
 class SongsterrTrackSearchResult:
-    def __init__(self, track_name: str, tuning: Optional[Tuning], difficulty: Optional[int]):
-        self.track_name = track_name
+    def __init__(self, name: str, instrument: str, tuning: Optional[Tuning], difficulty: Optional[int]):
+        self.name = name or instrument
+        self.instrument = instrument
         self.tuning = tuning
         self.difficulty = difficulty
 
@@ -164,14 +181,16 @@ class SongsterrTrack:
     def __init__(self,
                  song: "SongsterrSong",
                  track_id: int,
-                 track_name: str,
+                 name: str,
+                 instrument: str,
                  tuning: Optional[Tuning],
                  capo: int,
                  difficulty: Optional[int],
                  measures: list[dict]):
         self.song = song
         self.track_id = track_id
-        self.track_name = track_name
+        self.name = name or instrument
+        self.instrument = instrument
         self.tuning = tuning
         self.capo = capo
         self.difficulty = difficulty
@@ -221,18 +240,19 @@ async def _download_songsterr_song(song_id: int) -> SongsterrSong:
     )
 
     download_tasks = []
-    for i in range(len(song_data.track_names)):
+    for i in range(len(song_data.names)):
         track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
         download_tasks.append(_fetch(track_url))
     track_datas = await asyncio.gather(*download_tasks)
 
-    zipped = zip(song_data.track_names, song_data.track_difficulties, track_datas)
-    for i, (track_name, track_difficulty, track_data_text) in enumerate(zipped):
+    zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
+    for i, (name, instrument, track_difficulty, track_data_text) in enumerate(zipped):
         track_data = _extract_track_data(track_data_text)
         song.tracks.append(SongsterrTrack(
             song=song,
             track_id=i,
-            track_name=track_name,
+            name=name,
+            instrument=instrument,
             tuning=track_data.tuning,
             difficulty=track_difficulty,
             capo=track_data.capo,
@@ -249,7 +269,8 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
         tracks = []
         for track in result["tracks"]:
             tracks.append(SongsterrTrackSearchResult(
-                track_name=track["name"],
+                name=track["name"],
+                instrument=track["instrument"],
                 tuning=Tuning([n - 40 for n in track["tuning"]]) if track.get("tuning") else None,
                 difficulty=track.get("difficulty"),
             ))
@@ -285,7 +306,7 @@ async def download_youtube_mp3(video_id: str) -> Mp3:
             return Mp3(data=f.read(), duration=duration)
 
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
-    return f"arrangements/{track.track_id}_{_to_valid_filename(track.track_name)}.json"
+    return f"arrangements/{track.track_id}_{_to_valid_filename(track.name)}.json"
 
 def _get_stem_filename() -> str:
     return "stems/full.mp3"
@@ -418,7 +439,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         del note["sus_threshold"]
 
     return json.dumps({
-        "name": track.track_name,
+        "name": track.name,
         "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
         "capo": track.capo,
         "notes": fp_notes,
@@ -438,8 +459,8 @@ def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
         "duration": duration,
         "arrangements": [
             {
-                "id": f"{track.track_id}_{_to_valid_filename(track.track_name)}",
-                "name": track.track_name,
+                "id": f"{track.track_id}_{_to_valid_filename(track.name)}",
+                "name": track.name,
                 "file": _get_arrangement_filename(track),
                 "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
                 "capo": track.capo,
@@ -475,7 +496,7 @@ async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSon
     song = await _download_songsterr_song(song_id)
     song.tracks = [
         track for track in song.tracks
-        if track.tuning and ("guitar" in track.track_name.lower() or "bass" in track.track_name.lower())]
+        if track.tuning and _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
     mp3 = await download_youtube_mp3(song.yt_video_id)
     feedpak = build_feedpak(song, mp3)
     return song, mp3, feedpak
@@ -500,9 +521,9 @@ async def _handle_search(args):
     for result in results:
         print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
         for track in result.tracks:
-            if "guitar" in track.track_name.lower() or "bass" in track.track_name.lower():
+            if _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS):
                 tuning_name = f" ({track.tuning.name})" if track.tuning else ""
-                print(f"    - {track.track_name}{tuning_name}")
+                print(f"    - {track.name}{tuning_name}")
     return results
 
 async def main():

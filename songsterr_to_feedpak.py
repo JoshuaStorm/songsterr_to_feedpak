@@ -14,6 +14,15 @@ import httpx
 import yt_dlp
 import ffmpeg
 
+# Minimum number of frets in anchor
+CONFIG_ANCHOR_MIN_WIDTH = 4
+# Amount of time to move the anchor back, measured in beats
+CONFIG_ANCHOR_MARGIN_BEATS = 0.1
+# Amount of sustain to remove at the end, measured in beats
+CONFIG_SUSTAIN_MARGIN_BEATS = 0.2
+# Number of frets to slide for unpitched slides
+CONFIG_UNPITCHED_SLIDE_WIDTH = 5
+
 def get_note_name(note: int):
     return [
         'E',
@@ -64,6 +73,7 @@ class Tuning:
                                  lambda strings: " ".join(get_note_name(n) for n in reversed(strings)))
         self.name = shape.formatter(strings)
 
+# Only support up to 8 strings
 _STANDARD_TUNING = [-10, -5, 0, 5, 10, 15, 19, 24]
 
 def _tuning_subtract(lhs: list[int], rhs: list[int]) -> list[int]:
@@ -106,6 +116,23 @@ class _SongData:
             self.artist = artist
             self.title = title
 
+    @staticmethod
+    def extract(html_text: str) -> "_SongData":
+        soup = bs4.BeautifulSoup(html_text, "html.parser")
+        j = soup.find(id="state").text
+        data = json.loads(j)["meta"]["current"]
+        return _SongData(
+            song_id=data["songId"],
+            revision=data["revisionId"],
+            image=data["image"],
+            names=[t["name"] for t in data["tracks"]],
+            instruments=[t["instrument"] for t in data["tracks"]],
+            track_difficulties=[t.get("difficulty") for t in data["tracks"]],
+            tags=data["tags"],
+            artist=data["artist"],
+            title=data["title"],
+        )
+
 class _TrackData:
     def __init__(self,
                  string_count: int,
@@ -117,66 +144,56 @@ class _TrackData:
         self.capo = capo
         self.measures = measures
 
+    @staticmethod
+    def extract(text: str) -> "_TrackData":
+        json_data = json.loads(text)
+        return _TrackData(
+            string_count=json_data["strings"],
+            tuning=Tuning([n - 40 for n in json_data["tuning"]])
+                        if json_data.get("tuning") else None,
+            capo=json_data.get("capo", 0),
+            measures=json_data["measures"],
+        )
+
 class _VideoSyncData:
     def __init__(self, video_id: str, measure_times: list[float]):
         self.video_id = video_id
         self.measure_times = measure_times
 
-def _extract_song_data(html_text: str) -> _SongData:
-    soup = bs4.BeautifulSoup(html_text, "html.parser")
-    j = soup.find(id="state").text
-    data = json.loads(j)["meta"]["current"]
-    return _SongData(
-        song_id=data["songId"],
-        revision=data["revisionId"],
-        image=data["image"],
-        names=[t["name"] for t in data["tracks"]],
-        instruments=[t["instrument"] for t in data["tracks"]],
-        track_difficulties=[t.get("difficulty") for t in data["tracks"]],
-        tags=data["tags"],
-        artist=data["artist"],
-        title=data["title"],
-    )
+    @staticmethod
+    def extract(text: str) -> list["_VideoSyncData"]:
+        def _cmp_video(lhs, rhs):
+            """
+            Prefer non feature videos, then order by index.
+            """
+            lhs_has_feature = bool(lhs.get("feature", False))
+            rhs_has_feature = bool(rhs.get("feature", False))
+            if lhs_has_feature != rhs_has_feature:
+                return int(lhs_has_feature) - int(rhs_has_feature)
+            return lhs["_index"] - rhs["_index"]
+            
+        videos = json.loads(text)
+        for i, video in enumerate(videos):
+            video["_index"] = i
 
-def _extract_track_data(text: str) -> _TrackData:
-    json_data = json.loads(text)
-    return _TrackData(
-        string_count=json_data["strings"],
-        tuning=Tuning([n - 40 for n in json_data["tuning"]])
-                      if json_data.get("tuning") else None,
-        capo=json_data.get("capo", 0),
-        measures=json_data["measures"],
-    )
-
-def _extract_video_sync_data(text: str) -> list[_VideoSyncData]:
-    def _cmp_video(v1, v2):
-        v1_has_feature = bool(v1.get("feature", False))
-        v2_has_feature = bool(v2.get("feature", False))
-        if v1_has_feature != v2_has_feature:
-            return int(v1_has_feature) - int(v2_has_feature)
-        return v1["_index"] - v2["_index"]
-        
-    videos = json.loads(text)
-    for i, video in enumerate(videos):
-        video["_index"] = i
-
-    return [_VideoSyncData(
-        video_id=video["videoId"],
-        measure_times=video["points"],
-    ) for video in sorted(videos, key=cmp_to_key(_cmp_video))]
+        return [_VideoSyncData(
+            video_id=video["videoId"],
+            measure_times=video["points"],
+        ) for video in sorted(videos, key=cmp_to_key(_cmp_video))]
 
 class Instrument:
     GUITAR = "guitar"
     BASS = "bass"
     OTHER = "other"
 
-def _get_instrument_type(instrument: str) -> str:
-    if "guitar" in instrument.lower():
-        return Instrument.GUITAR
-    elif "bass" in instrument.lower():
-        return Instrument.BASS
-    else:
-        return Instrument.OTHER
+    @staticmethod
+    def get(instrument: str) -> str:
+        if "guitar" in instrument.lower():
+            return Instrument.GUITAR
+        elif "bass" in instrument.lower():
+            return Instrument.BASS
+        else:
+            return Instrument.OTHER
 
 class SongsterrTrackSearchResult:
     def __init__(self, name: str, instrument: str, tuning: Optional[Tuning], difficulty: Optional[int]):
@@ -237,13 +254,20 @@ async def _fetch(url) -> str:
         response = await client.get(url, follow_redirects=True)
         return response.text
 
-async def _download_songsterr_song(song_id: int) -> list[SongsterrSong]:
+async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
     html_url = _get_song_url(song_id)
     html_text = await _fetch(html_url)
-    song_data = _extract_song_data(html_text)
+    song_data = _SongData.extract(html_text)
 
     video_sync_url = _get_video_sync_url(song_data.song_id, song_data.revision)
-    video_sync_datas = _extract_video_sync_data(await _fetch(video_sync_url))
+    video_sync_datas = _VideoSyncData.extract(await _fetch(video_sync_url))
+
+    download_tasks = []
+    for i in range(len(song_data.names)):
+        track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
+        download_tasks.append(_fetch(track_url))
+    track_data_text = await asyncio.gather(*download_tasks)
+    track_datas = [_TrackData.extract(text) for text in track_data_text]
 
     songs = []
     for video_sync_data in video_sync_datas:
@@ -253,18 +277,10 @@ async def _download_songsterr_song(song_id: int) -> list[SongsterrSong]:
             artist=song_data.artist,
             tracks=[],
             yt_video_id=video_sync_data.video_id,
-            video_sync_times=video_sync_data.measure_times
+            video_sync_times=video_sync_data.measure_times,
         )
-
-        download_tasks = []
-        for i in range(len(song_data.names)):
-            track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
-            download_tasks.append(_fetch(track_url))
-        track_datas = await asyncio.gather(*download_tasks)
-
         zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
-        for i, (name, instrument, track_difficulty, track_data_text) in enumerate(zipped):
-            track_data = _extract_track_data(track_data_text)
+        for i, (name, instrument, track_difficulty, track_data) in enumerate(zipped):
             song.tracks.append(SongsterrTrack(
                 song=song,
                 track_id=i,
@@ -302,26 +318,30 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
 
 async def download_youtube_mp3(video_id: str) -> Mp3:
     # TODO: make async
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_file =  os.path.join(tmp_dir, video_id)
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '0',
-            }],
-            'outtmpl': tmp_file,
-        }
-        tmp_file += '.mp3'
+    try:
+        print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_file =  os.path.join(tmp_dir, video_id)
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '0',
+                }],
+                'outtmpl': tmp_file,
+            }
+            tmp_file += '.mp3'
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
 
-        duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
+            duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
-        with open(tmp_file, 'rb') as f:
-            return Mp3(data=f.read(), duration=duration)
+            with open(tmp_file, 'rb') as f:
+                return Mp3(data=f.read(), duration=duration)
+    finally:
+        print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
     return f"arrangements/{track.track_id}_{_to_valid_filename(track.name)}.json"
@@ -336,31 +356,35 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_sections = []
     fp_beats = []
 
-    secs_per_semibreve = 15 / 100 # 100 bpm
+    DEFAULT_BPM = 100
+    secs_per_semibreve = 15 / DEFAULT_BPM
     t = 0
-    anchor_min_width = 4
     anchor_min_fret = -1
     anchor_max_fret = -1
-    hopo_from = {}
-    slides = set()
-    prev_notes = {}
+    hopo_from = {} # Map of string -> the fret we are hopo-ing from
+    slides = set() # Strings that are currently sliding
+    prev_notes = {} # Map of string -> the previous note on that string
 
     for measure_num, measure in enumerate(track.measures):
+        # Calculate the length of measure
         beats = measure["voices"][0]["beats"]
         semibreves_in_measure = sum(
             beat["duration"][0] / beat["duration"][1]
             for beat in beats
         )
 
+        # Update current time
         if measure_num < len(track.song.video_sync_times):
             t = track.song.video_sync_times[measure_num]
+
+        # Calculate BPM (actually secs per semibreve since that is more natural)
         if measure_num + 1 < len(track.song.video_sync_times):
             next_measure_t = track.song.video_sync_times[measure_num + 1]
         else:
             next_measure_t = t + (semibreves_in_measure * secs_per_semibreve)
-
         secs_per_semibreve = (next_measure_t - t) / semibreves_in_measure
 
+        # Add section
         if "marker" in measure:
             section_name = measure["marker"]["text"]
             fp_sections.append({
@@ -369,6 +393,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 "time": t,
             })
 
+        # Add beat lines
         fp_beats.append({
             "time": t,
             "measure": measure_num + 1,
@@ -379,14 +404,18 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                 "measure": -1,
             })
 
+        # Process notes
         for beat in beats:
             duration_semibreves = (beat["duration"][0] / beat["duration"][1]) if "duration" in beat else 0
             palm_mute = beat.get("palmMute", False)
             tremelo = beat.get("tremolo", False)
             simultaneous_notes = []
             for note in beat["notes"]:
+                # Skip rests and unpitched notes
                 if ("rest" in note) or ("fret" not in note):
                     continue
+
+                # Skip ties (but update the sustain duration)
                 string = len(track.tuning.strings) - note["string"] - 1
                 if "tie" in note:
                     prev_notes[string]["sus"] += duration_semibreves * secs_per_semibreve
@@ -394,6 +423,8 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
 
                 fret = note["fret"]
                 hopo_delta = fret - hopo_from.get(string, fret)
+
+                # Set previous note's slide to this note's fret
                 if string in slides:
                     prev_notes[string]["sl"] = fret
                     slides.remove(string)
@@ -404,7 +435,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "sus": duration_semibreves * secs_per_semibreve, # Sustain in seconds
                     "spsb": secs_per_semibreve, # [Internal] seconds per semibreve
                     "sl": -1, # Pitched slide to fret (filled in later)
-                    "slu": fret - 5 if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
+                    "slu": fret - CONFIG_UNPITCHED_SLIDE_WIDTH if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
                     "bn": (note["bend"]["tone"] / 50) if note.get("bend") else 0, # Bend amount in semitones
                     "ho": hopo_delta > 0, # Hammer-on
                     "po": hopo_delta < 0, # Pull-off
@@ -414,15 +445,19 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato
                     "tr": tremelo, # Tremolo
-                    "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent
+                    "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent (also do staccato)
                 })
 
+                # Hopo handled on the next note
                 if string in hopo_from:
                     del hopo_from[string]
                 if note.get("hp", False):
                     hopo_from[string] = fret
+
+                # Work out slide destination later
                 if note.get("slide") in ("legato", "shift"):
                     slides.add(string)
+
                 prev_notes[string] = simultaneous_notes[-1]
 
             if len(simultaneous_notes) == 1:
@@ -436,32 +471,38 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "notes": simultaneous_notes,
                 })
 
+            # Update anchor if requested anchor does not fit in the current anchor
             non_open_notes = [note for note in simultaneous_notes if note["f"]]
             if non_open_notes:
                 req_anchor_min_fret = min(note["f"] for note in non_open_notes)
                 req_anchor_max_fret = max(note["f"] for note in non_open_notes)
                 if not (anchor_min_fret <= req_anchor_min_fret <= req_anchor_max_fret <= anchor_max_fret):
                     anchor_min_fret = req_anchor_min_fret
-                    anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + anchor_min_width - 1)
+                    anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + CONFIG_ANCHOR_MIN_WIDTH - 1)
                     fp_anchors.append({
-                        "time": t - secs_per_semibreve / 4  * 0.1,
+                        "time": t - secs_per_semibreve / 4  * CONFIG_ANCHOR_MARGIN_BEATS,
                         "fret": anchor_min_fret,
                         "width": anchor_max_fret - anchor_min_fret + 1,
                     })
 
+            # Update time
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
 
+    # Post-process sustains
     for note in fp_notes + [n for chord in fp_chords for n in chord["notes"]]:
         secs_per_beat = note["spsb"] / 4
+        # Do not sustain if duration is less than a beat.
+        # Slides/bends/vibrato/tremolo are always sustains.
         if (note["sus"] <= secs_per_beat
                 and note["sl"] == -1
                 and note["slu"] == -1
                 and note["bn"] == 0
+                and not note["vb"]
                 and not note["tr"]):
             note["sus"] = 0
-        elif (note["sl"] == -1
-                and note["slu"] == -1):
-            note["sus"] -= secs_per_beat * 0.2
+        # Visually shorten the sustain slightly unless it is a slide
+        elif (note["sl"] == -1 and note["slu"] == -1):
+            note["sus"] -= secs_per_beat * CONFIG_SUSTAIN_MARGIN_BEATS
         del note["spsb"]
 
     return json.dumps({
@@ -475,7 +516,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         "templates": [],
         "beats": fp_beats,
         "sections": fp_sections,
-    }, indent=2)
+    })
 
 def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
     manifest = {
@@ -520,11 +561,13 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
 
 async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     exc = None
-    songs = await _download_songsterr_song(song_id)
+    songs = await download_songsterr_song(song_id)
     for song in songs:
+        if songs != songs[0]:
+            print(f"Trying next alternative youtube video")
         song.tracks = [
             track for track in song.tracks
-            if track.tuning and _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
+            if track.tuning and Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
         try:
             mp3 = await download_youtube_mp3(song.yt_video_id)
         except Exception as e:
@@ -535,6 +578,7 @@ async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSon
     raise exc or ValueError("No valid tracks found for this song")
 
 async def _handle_download(args):
+    print(f"==== DOWNLOAD SONG ====")
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download)
     feedpak_dst = args.output if args.output else f"{_to_valid_filename(song.artist)} - {_to_valid_filename(song.title)} - {song.song_id}.feedpak"
 
@@ -549,12 +593,13 @@ async def _handle_download(args):
             f.write(build_zip(feedpak))
 
 async def _handle_search(args) -> list[SongsterrSongSearchResult]:
+    print("==== SEARCH ====")
     results = await search_songsterr(args.search)
     print(f"Search results for '{args.search}':")
     for result in results:
         print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
         for track in result.tracks:
-            if _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS):
+            if Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS):
                 tuning_name = f" ({track.tuning.name})" if track.tuning else ""
                 print(f"    - {track.name}{tuning_name}")
     return results
@@ -562,11 +607,11 @@ async def _handle_search(args) -> list[SongsterrSongSearchResult]:
 async def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--download", "-D", type=int, help="The Songsterr song ID to download.")
-    group.add_argument("--search", "-s", type=str, help="The search query to find songs on Songsterr.")
-    group.add_argument("--search-and-download", "-d", type=str, help="Search for a song and download the first result. This is a convenience option that combines --search and --download.")
-    parser.add_argument("--output", "-o", type=str, help="The output file to save the downloaded song data (JSON format). Only valid with --download.")
-    parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak to a folder instead of a single file. Only valid with --download.")
+    group.add_argument("--download", "-D", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
+    group.add_argument("--search", "-s", metavar="QUERY", type=str, help="Search Songsterr for a song.")
+    group.add_argument("--search-and-download", "-d", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
+    parser.add_argument("--output", "-o", type=str, help="The output feedpak path.")
+    parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak as a folder instead of a single file.")
     args = parser.parse_args()
 
     if args.download:
@@ -578,6 +623,7 @@ async def main():
         results = await _handle_search(args)
         args.download = results[0].song_id
         await _handle_download(args)
+    print("==== DONE ====")
         
 if __name__ == "__main__":
     asyncio.run(main())

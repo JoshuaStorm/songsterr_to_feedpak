@@ -426,7 +426,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     anchor_min_fret = req_anchor_min_fret
                     anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + anchor_min_width - 1)
                     fp_anchors.append({
-                        "time": t,
+                        "time": t - secs_per_semibreve / 4  * 0.1,
                         "fret": anchor_min_fret,
                         "width": anchor_max_fret - anchor_min_fret + 1,
                     })

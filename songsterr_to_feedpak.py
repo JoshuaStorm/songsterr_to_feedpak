@@ -115,7 +115,7 @@ class _VideoSyncData:
         self.video_id = video_id
         self.measure_times = measure_times
 
-def _extract_song_data(html_text: str):
+def _extract_song_data(html_text: str) -> _SongData:
     soup = bs4.BeautifulSoup(html_text, "html.parser")
     j = soup.find(id="state").text
     data = json.loads(j)["meta"]["current"]
@@ -131,7 +131,7 @@ def _extract_song_data(html_text: str):
         title=data["title"],
     )
 
-def _extract_track_data(text: str):
+def _extract_track_data(text: str) -> _TrackData:
     json_data = json.loads(text)
     return _TrackData(
         string_count=json_data["strings"],
@@ -141,7 +141,7 @@ def _extract_track_data(text: str):
         measures=json_data["measures"],
     )
 
-def _extract_video_sync_data(text: str):
+def _extract_video_sync_data(text: str) -> _VideoSyncData:
     json_data = json.loads(text)
     non_feature_videos = [v for v in json_data if not v.get("feature")]
     video = non_feature_videos[0] if non_feature_videos else json_data[0]
@@ -216,7 +216,7 @@ class Mp3:
         self.data = data
         self.duration = duration
 
-async def _fetch(url):
+async def _fetch(url) -> str:
     print(f"Fetching {url}")
     async with httpx.AsyncClient() as client:
         response = await client.get(url, follow_redirects=True)
@@ -523,7 +523,7 @@ async def _handle_download(args):
         with open(feedpak_dst, 'wb') as f:
             f.write(build_zip(feedpak))
 
-async def _handle_search(args):
+async def _handle_search(args) -> list[SongsterrSongSearchResult]:
     results = await search_songsterr(args.search)
     print(f"Search results for '{args.search}':")
     for result in results:

@@ -384,7 +384,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "s": string, # String number
                     "f": fret, # Fret number
                     "sus": duration_semibreves * secs_per_semibreve, # Sustain in seconds
-                    "sus_threshold": secs_per_semibreve / 4, # [Internal] minimum sustain
+                    "spsb": secs_per_semibreve, # [Internal] seconds per semibreve
                     "sl": -1, # Pitched slide to fret (filled in later)
                     "slu": fret - 5 if note.get("slide") == "downwards" else -1, # Unpitched slide to fret
                     "bn": (note["bend"]["tone"] / 50) if note.get("bend") else 0, # Bend amount in semitones
@@ -434,13 +434,17 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
 
     for note in fp_notes + [n for chord in fp_chords for n in chord["notes"]]:
-        if (note["sus"] <= note["sus_threshold"]
-            and note["sl"] == -1
-            and note["slu"] == -1
-            and note["bn"] == 0
-            and not note["tr"]):
+        secs_per_beat = note["spsb"] / 4
+        if (note["sus"] <= secs_per_beat
+                and note["sl"] == -1
+                and note["slu"] == -1
+                and note["bn"] == 0
+                and not note["tr"]):
             note["sus"] = 0
-        del note["sus_threshold"]
+        elif (note["sl"] == -1
+                and note["slu"] == -1):
+            note["sus"] -= secs_per_beat * 0.2
+        del note["spsb"]
 
     return json.dumps({
         "name": track.name,

@@ -434,7 +434,11 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
 
     for note in fp_notes + [n for chord in fp_chords for n in chord["notes"]]:
-        if note["sus"] <= note["sus_threshold"] and note["sl"] == -1 and note["slu"] == -1 and not note["tr"]:
+        if (note["sus"] <= note["sus_threshold"]
+            and note["sl"] == -1
+            and note["slu"] == -1
+            and note["bn"] == 0
+            and not note["tr"]):
             note["sus"] = 0
         del note["sus_threshold"]
 

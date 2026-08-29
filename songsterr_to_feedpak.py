@@ -42,6 +42,12 @@ _TuningShape.DROP = _TuningShape([-5, -4, -5, -5, -7],
 _TuningShape.BASS_STD = _TuningShape([-5, -5, -5],
                     lambda strings: f"Bass {get_note_name(strings[3])} STD")
 
+_TUNING_SHAPES = [
+    _TuningShape.STD,
+    _TuningShape.DROP,
+    _TuningShape.BASS_STD,
+]
+
 class Tuning:
     def __init__(self, strings: list[int]):
         """
@@ -49,13 +55,13 @@ class Tuning:
         """
         self.strings = strings
         deltas = [strings[i + 1] - strings[i] for i in range(len(strings) - 1)]
-        for shape in [_TuningShape.STD, _TuningShape.DROP, _TuningShape.BASS_STD]:
+        for shape in _TUNING_SHAPES:
             if deltas == shape.deltas:
                 shape = shape
                 break
         else:
             shape = _TuningShape(deltas,
-                                      lambda strings: " ".join(get_note_name(n) for n in strings))
+                                 lambda strings: " ".join(get_note_name(n) for n in reversed(strings)))
         self.name = shape.formatter(strings)
 
 _STANDARD_TUNING = [-10, -5, 0, 5, 10, 15, 19, 24]

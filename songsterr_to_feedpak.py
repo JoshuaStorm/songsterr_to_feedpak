@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Kevin Lu
+
 from typing import Callable, Optional, Tuple, Union
 from functools import cmp_to_key
 import os

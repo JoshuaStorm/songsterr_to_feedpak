@@ -1,4 +1,5 @@
 from typing import Callable, Optional, Tuple, Union
+from functools import cmp_to_key
 import os
 import tempfile
 import json
@@ -141,14 +142,22 @@ def _extract_track_data(text: str) -> _TrackData:
         measures=json_data["measures"],
     )
 
-def _extract_video_sync_data(text: str) -> _VideoSyncData:
-    json_data = json.loads(text)
-    non_feature_videos = [v for v in json_data if not v.get("feature")]
-    video = non_feature_videos[0] if non_feature_videos else json_data[0]
-    return _VideoSyncData(
+def _extract_video_sync_data(text: str) -> list[_VideoSyncData]:
+    def _cmp_video(v1, v2):
+        v1_has_feature = bool(v1.get("feature", False))
+        v2_has_feature = bool(v2.get("feature", False))
+        if v1_has_feature != v2_has_feature:
+            return int(v1_has_feature) - int(v2_has_feature)
+        return v1["_index"] - v2["_index"]
+        
+    videos = json.loads(text)
+    for i, video in enumerate(videos):
+        video["_index"] = i
+
+    return [_VideoSyncData(
         video_id=video["videoId"],
         measure_times=video["points"],
-    )
+    ) for video in sorted(videos, key=cmp_to_key(_cmp_video))]
 
 class Instrument:
     GUITAR = "guitar"
@@ -222,43 +231,46 @@ async def _fetch(url) -> str:
         response = await client.get(url, follow_redirects=True)
         return response.text
 
-async def _download_songsterr_song(song_id: int) -> SongsterrSong:
+async def _download_songsterr_song(song_id: int) -> list[SongsterrSong]:
     html_url = _get_song_url(song_id)
     html_text = await _fetch(html_url)
     song_data = _extract_song_data(html_text)
 
     video_sync_url = _get_video_sync_url(song_data.song_id, song_data.revision)
-    video_sync_data = _extract_video_sync_data(await _fetch(video_sync_url))
+    video_sync_datas = _extract_video_sync_data(await _fetch(video_sync_url))
 
-    song = SongsterrSong(
-        song_id=song_data.song_id,
-        title=song_data.title,
-        artist=song_data.artist,
-        tracks=[],
-        yt_video_id=video_sync_data.video_id,
-        video_sync_times=video_sync_data.measure_times
-    )
+    songs = []
+    for video_sync_data in video_sync_datas:
+        song = SongsterrSong(
+            song_id=song_data.song_id,
+            title=song_data.title,
+            artist=song_data.artist,
+            tracks=[],
+            yt_video_id=video_sync_data.video_id,
+            video_sync_times=video_sync_data.measure_times
+        )
 
-    download_tasks = []
-    for i in range(len(song_data.names)):
-        track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
-        download_tasks.append(_fetch(track_url))
-    track_datas = await asyncio.gather(*download_tasks)
+        download_tasks = []
+        for i in range(len(song_data.names)):
+            track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
+            download_tasks.append(_fetch(track_url))
+        track_datas = await asyncio.gather(*download_tasks)
 
-    zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
-    for i, (name, instrument, track_difficulty, track_data_text) in enumerate(zipped):
-        track_data = _extract_track_data(track_data_text)
-        song.tracks.append(SongsterrTrack(
-            song=song,
-            track_id=i,
-            name=name,
-            instrument=instrument,
-            tuning=track_data.tuning,
-            difficulty=track_difficulty,
-            capo=track_data.capo,
-            measures=track_data.measures,
-        ))
-    return song
+        zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
+        for i, (name, instrument, track_difficulty, track_data_text) in enumerate(zipped):
+            track_data = _extract_track_data(track_data_text)
+            song.tracks.append(SongsterrTrack(
+                song=song,
+                track_id=i,
+                name=name,
+                instrument=instrument,
+                tuning=track_data.tuning,
+                difficulty=track_difficulty,
+                capo=track_data.capo,
+                measures=track_data.measures,
+            ))
+        songs.append(song)
+    return songs
 
 async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> list[SongsterrSongSearchResult]:
     search_url = _get_search_url(query, from_index, count)
@@ -501,13 +513,20 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
     return files
 
 async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
-    song = await _download_songsterr_song(song_id)
-    song.tracks = [
-        track for track in song.tracks
-        if track.tuning and _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
-    mp3 = await download_youtube_mp3(song.yt_video_id)
-    feedpak = build_feedpak(song, mp3)
-    return song, mp3, feedpak
+    exc = None
+    songs = await _download_songsterr_song(song_id)
+    for song in songs:
+        song.tracks = [
+            track for track in song.tracks
+            if track.tuning and _get_instrument_type(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
+        try:
+            mp3 = await download_youtube_mp3(song.yt_video_id)
+        except Exception as e:
+            exc = e
+        else:
+            feedpak = build_feedpak(song, mp3)
+            return song, mp3, feedpak
+    raise exc or ValueError("No valid tracks found for this song")
 
 async def _handle_download(args):
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download)

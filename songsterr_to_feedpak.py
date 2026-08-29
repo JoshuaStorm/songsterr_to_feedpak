@@ -9,6 +9,7 @@ import io
 import zipfile
 import asyncio
 import argparse
+import shutil
 
 import yaml
 import bs4
@@ -588,8 +589,16 @@ async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSon
             return song, mp3, feedpak
     raise exc or ValueError("No valid tracks found for this song")
 
+def has_ffmpeg() -> bool:
+    return shutil.which("ffmpeg") is not None
+
 async def _handle_download(args):
     print(f"==== DOWNLOAD SONG ====")
+
+    # Need ffmpeg for youtube download
+    if not has_ffmpeg():
+        raise RuntimeError("ffmpeg is not installed")
+
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download)
     feedpak_dst = args.output if args.output else f"{_to_valid_filename(song.artist)} - {_to_valid_filename(song.title)} - {song.song_id}.feedpak"
 

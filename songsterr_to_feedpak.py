@@ -600,7 +600,15 @@ async def _handle_download(args):
         raise RuntimeError("ffmpeg is not installed")
 
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download)
-    feedpak_dst = args.output if args.output else f"{_to_valid_filename(song.artist)} - {_to_valid_filename(song.title)} - {song.song_id}.feedpak"
+
+    default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
+    if args.output:
+        if os.path.isdir(args.output):
+            feedpak_dst = os.path.join(args.output, default_filename)
+        else:
+            feedpak_dst = args.output
+    else:
+        feedpak_dst = default_filename
 
     if args.folder:
         for filename, data in feedpak.items():
@@ -630,7 +638,7 @@ async def main():
     group.add_argument("--download", "-D", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
     group.add_argument("--search", "-s", metavar="QUERY", type=str, help="Search Songsterr for a song.")
     group.add_argument("--search-and-download", "-d", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
-    parser.add_argument("--output", "-o", type=str, help="The output feedpak path.")
+    parser.add_argument("--output", "-o", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
     parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak as a folder instead of a single file.")
     args = parser.parse_args()
 

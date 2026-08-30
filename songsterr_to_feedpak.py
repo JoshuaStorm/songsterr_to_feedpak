@@ -10,6 +10,7 @@ import zipfile
 import asyncio
 import argparse
 import shutil
+import re
 
 import yaml
 import bs4
@@ -191,9 +192,9 @@ class Instrument:
 
     @staticmethod
     def get(instrument: str) -> str:
-        if "guitar" in instrument.lower():
+        if re.search(r"\bguitar\b", instrument, flags=re.IGNORECASE):
             return Instrument.GUITAR
-        elif "bass" in instrument.lower():
+        elif re.search(r"\bbass\b", instrument, flags=re.IGNORECASE):
             return Instrument.BASS
         else:
             return Instrument.OTHER

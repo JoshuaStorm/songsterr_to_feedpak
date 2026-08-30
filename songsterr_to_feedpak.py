@@ -448,7 +448,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "mt": note.get("dead", False), # String mute
                     "vb": note.get("vibrato", False), # Vibrato
                     "tr": tremelo, # Tremolo
-                    "ac": note.get("accentuated", False) or note.get("stoccato", False), # Accent (also do staccato)
+                    "ac": note.get("accentuated", False) or note.get("staccato", False), # Accent (also do staccato)
                 })
 
                 # Hopo handled on the next note

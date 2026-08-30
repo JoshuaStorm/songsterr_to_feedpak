@@ -413,6 +413,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
 
             palm_mute = beat.get("palmMute", False)
             tremelo = beat.get("tremolo", False)
+            tap = beat.get("tapping", False)
 
             pick_dir = -1
             if "pickStroke" in beat:
@@ -459,6 +460,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "tr": tremelo, # Tremolo
                     "ac": note.get("accentuated", False) or note.get("staccato", False), # Accent (also do staccato)
                     "pkd": pick_dir, # Pick direction
+                    "tap": tap, # Tap
                 })
 
                 # Hopo handled on the next note

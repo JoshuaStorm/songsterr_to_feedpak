@@ -97,7 +97,9 @@ def _get_search_url(query: str, from_index: int, count: int) -> str:
     return f"https://www.songsterr.com/api/search?pattern={query}&size={count}&from={from_index}"
 
 def _to_valid_filename(name: str) -> str:
-    return "".join(c for c in name if c.isalnum() or c in " ._-").rstrip()
+    name = name.replace("|", "-")
+    s = "".join(c for c in name if c.isalnum() or c in " ._-").strip()
+    return s or "file"
 
 class _SongData:
     def __init__(self,

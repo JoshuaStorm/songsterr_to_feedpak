@@ -650,11 +650,11 @@ async def _handle_search(args) -> list[SongsterrSongSearchResult]:
 async def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--download", "-D", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
-    group.add_argument("--search", "-s", metavar="QUERY", type=str, help="Search Songsterr for a song.")
-    group.add_argument("--search-and-download", "-d", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
-    parser.add_argument("--output", "-o", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
-    parser.add_argument("--folder", "-f", action="store_true", help="Save feedpak as a folder instead of a single file.")
+    group.add_argument("-D", "--download", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
+    group.add_argument("-s", "--search", metavar="QUERY", type=str, help="Search Songsterr for a song.")
+    group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
+    parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
+    parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
     args = parser.parse_args()
 
     if args.download:

@@ -410,8 +410,17 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         # Process notes
         for beat in beats:
             duration_semibreves = (beat["duration"][0] / beat["duration"][1]) if "duration" in beat else 0
+
             palm_mute = beat.get("palmMute", False)
             tremelo = beat.get("tremolo", False)
+
+            pick_dir = -1
+            if "pickStroke" in beat:
+                if beat["pickStroke"] == "down":
+                    pick_dir = 0
+                elif beat["pickStroke"] == "up":
+                    pick_dir = 1
+
             simultaneous_notes = []
             for note in beat["notes"]:
                 # Skip rests and unpitched notes
@@ -449,6 +458,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "vb": note.get("vibrato", False), # Vibrato
                     "tr": tremelo, # Tremolo
                     "ac": note.get("accentuated", False) or note.get("staccato", False), # Accent (also do staccato)
+                    "pkd": pick_dir, # Pick direction
                 })
 
                 # Hopo handled on the next note

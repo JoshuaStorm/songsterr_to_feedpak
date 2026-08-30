@@ -587,7 +587,7 @@ async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSon
     exc = None
     songs = await download_songsterr_song(song_id)
     for song in songs:
-        if songs != songs[0]:
+        if song != songs[0]:
             print(f"Trying next alternative youtube video")
         song.tracks = [
             track for track in song.tracks

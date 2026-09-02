@@ -369,8 +369,8 @@ async def download_youtube_mp3(video_id: str) -> Mp3:
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
     return f"arrangements/{track.track_id}_{_to_valid_filename(track.name)}.json"
 
-def _get_stem_filename() -> str:
-    return "stems/full.mp3"
+def _get_stem_filename(song: SongsterrSong) -> str:
+    return f"stems/full_{song.yt_video_id}.mp3"
 
 def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_notes = []
@@ -580,7 +580,7 @@ def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
         ],
         "stems": [{
             "id": "full",
-            "file": _get_stem_filename(),
+            "file": _get_stem_filename(song),
             "default": True,
         }],
     }
@@ -600,7 +600,7 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
     files["manifest.yaml"] = build_feedpak_manifest(song, mp3.duration)
     for track in song.tracks:
         files[_get_arrangement_filename(track)] = build_feedpak_arrangement(track)
-    files[_get_stem_filename()] = mp3.data
+    files[_get_stem_filename(song)] = mp3.data
     return files
 
 async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:

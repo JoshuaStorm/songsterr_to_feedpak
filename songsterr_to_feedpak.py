@@ -267,15 +267,22 @@ class SongsterrSong:
         self.video_sync_times = video_sync_times
 
 class Mp3:
-    def __init__(self, data: bytes, duration: float):
+    def __init__(self, data: bytes, duration: float, thumbnail: Optional[bytes] = None):
         self.data = data
         self.duration = duration
+        self.thumbnail = thumbnail
 
 async def _fetch(url) -> str:
     print(f"Fetching {url}")
     async with httpx.AsyncClient() as client:
         response = await client.get(url, follow_redirects=True)
         return response.text
+
+async def _fetch_bytes(url) -> bytes:
+    print(f"Fetching {url}")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, follow_redirects=True)
+        return response.content
 
 async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
     html_url = _get_song_url(song_id)
@@ -357,12 +364,14 @@ async def download_youtube_mp3(video_id: str) -> Mp3:
             tmp_file += '.mp3'
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+                thumbnail_url = info.get('thumbnail')
+                thumbnail = await _fetch_bytes(thumbnail_url) if thumbnail_url else None
 
             duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
             with open(tmp_file, 'rb') as f:
-                return Mp3(data=f.read(), duration=duration)
+                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail)
     finally:
         print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
@@ -371,6 +380,9 @@ def _get_arrangement_filename(track: SongsterrTrack) -> str:
 
 def _get_stem_filename(song: SongsterrSong) -> str:
     return f"stems/full_{song.yt_video_id}.mp3"
+
+def _get_cover_filename() -> str:
+    return "cover.jpg"
 
 def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_notes = []
@@ -561,13 +573,13 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         "sections": fp_sections,
     })
 
-def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
+def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
     manifest = {
         "songsterr_to_feedpak_version": "0.0.0",
         "feedpak_version": "1.0.0",
         "title": song.title,
         "artist": song.artist,
-        "duration": duration,
+        "duration": mp3.duration,
         "arrangements": [
             {
                 "id": f"{track.track_id}_{_to_valid_filename(track.name)}",
@@ -584,6 +596,8 @@ def build_feedpak_manifest(song: SongsterrSong, duration: float) -> str:
             "default": True,
         }],
     }
+    if mp3.thumbnail:
+        manifest["cover"] = _get_cover_filename()
     return yaml.dump(manifest)
 
 def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
@@ -597,10 +611,12 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
     if any(not track.tuning for track in song.tracks):
         raise ValueError("All tracks must have a valid tuning")
     files = {}
-    files["manifest.yaml"] = build_feedpak_manifest(song, mp3.duration)
+    files["manifest.yaml"] = build_feedpak_manifest(song, mp3)
     for track in song.tracks:
         files[_get_arrangement_filename(track)] = build_feedpak_arrangement(track)
     files[_get_stem_filename(song)] = mp3.data
+    if mp3.thumbnail:
+        files[_get_cover_filename()] = mp3.thumbnail
     return files
 
 async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:

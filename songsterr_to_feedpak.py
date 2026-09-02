@@ -180,7 +180,7 @@ class _VideoType:
     PLAYTHROUGH = "playthrough"
 
     @staticmethod
-    def get(feature: str) -> str:
+    def get(feature: Optional[str]) -> str:
         types = (
             _VideoType.ALTERNATIVE,
             _VideoType.BACKING,
@@ -200,8 +200,8 @@ class _VideoSyncData:
     @staticmethod
     def extract(text: str) -> list["_VideoSyncData"]:
         def _cmp_video(lhs, rhs):
-            lhs_is_special_type = lhs.get("feature") not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
-            rhs_is_special_type = rhs.get("feature") not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
+            lhs_is_special_type = _VideoType.get(lhs.get("feature")) not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
+            rhs_is_special_type = _VideoType.get(rhs.get("feature")) not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
             if lhs_is_special_type != rhs_is_special_type:
                 return int(lhs_is_special_type) - int(rhs_is_special_type)
             return lhs["_index"] - rhs["_index"]

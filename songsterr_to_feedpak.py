@@ -161,6 +161,26 @@ class _TrackData:
             measures=json_data["measures"],
         )
 
+class _VideoType:
+    NONE = "none"
+    ALTERNATIVE = "alternative"
+    BACKING = "backing"
+    SOLO = "solo"
+    PLAYTHROUGH = "playthrough"
+
+    @staticmethod
+    def get(feature: str) -> str:
+        types = (
+            _VideoType.ALTERNATIVE,
+            _VideoType.BACKING,
+            _VideoType.SOLO,
+            _VideoType.PLAYTHROUGH,
+        )
+        for t in types:
+            if feature == t:
+                return t
+        return _VideoType.NONE
+
 class _VideoSyncData:
     def __init__(self, video_id: str, measure_times: list[float]):
         self.video_id = video_id
@@ -169,13 +189,10 @@ class _VideoSyncData:
     @staticmethod
     def extract(text: str) -> list["_VideoSyncData"]:
         def _cmp_video(lhs, rhs):
-            """
-            Prefer non feature videos, then order by index.
-            """
-            lhs_has_feature = bool(lhs.get("feature", False))
-            rhs_has_feature = bool(rhs.get("feature", False))
-            if lhs_has_feature != rhs_has_feature:
-                return int(lhs_has_feature) - int(rhs_has_feature)
+            lhs_is_special_type = lhs.get("feature") not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
+            rhs_is_special_type = rhs.get("feature") not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
+            if lhs_is_special_type != rhs_is_special_type:
+                return int(lhs_is_special_type) - int(rhs_is_special_type)
             return lhs["_index"] - rhs["_index"]
             
         videos = json.loads(text)

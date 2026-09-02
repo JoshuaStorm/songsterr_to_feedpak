@@ -2,6 +2,7 @@
 
 from typing import Callable, Optional, Tuple, Union
 from functools import cmp_to_key
+import math
 import os
 import tempfile
 import json
@@ -42,6 +43,11 @@ def get_note_name(note: int):
         'D',
         'Eb',
     ][note % 12]
+
+def _cent_offset_from_note_a_freq(note_a_freq: Optional[int]) -> int:
+    if note_a_freq is None:
+        return 0
+    return round(1200 * math.log2(note_a_freq / 440))
 
 class _TuningShape:
     def __init__(self, deltas: list[int], formatter: Callable[[list[int]], str]):
@@ -144,14 +150,18 @@ class _TrackData:
                  string_count: int,
                  tuning: Optional[Tuning],
                  capo: int,
-                 measures: list[dict]):
+                 measures: list[dict],
+                 note_a_freq: Optional[int]):
         self.string_count = string_count
         self.tuning = tuning
         self.capo = capo
         self.measures = measures
+        self.note_a_freq = note_a_freq
 
     @staticmethod
     def extract(text: str) -> "_TrackData":
+        match = re.search(r"\b(\d+) ?[Hh][Zz]\b", text)
+        note_a_freq = int(match.group(1)) if match else None
         json_data = json.loads(text)
         return _TrackData(
             string_count=json_data["strings"],
@@ -159,6 +169,7 @@ class _TrackData:
                         if json_data.get("tuning") else None,
             capo=json_data.get("capo", 0),
             measures=json_data["measures"],
+            note_a_freq=note_a_freq,
         )
 
 class _VideoType:
@@ -241,7 +252,8 @@ class SongsterrTrack:
                  tuning: Optional[Tuning],
                  capo: int,
                  difficulty: Optional[int],
-                 measures: list[dict]):
+                 measures: list[dict],
+                 note_a_freq: Optional[int]):
         self.song = song
         self.track_id = track_id
         self.name = name or instrument
@@ -250,6 +262,7 @@ class SongsterrTrack:
         self.capo = capo
         self.difficulty = difficulty
         self.measures = measures
+        self.note_a_freq = note_a_freq
 
 class SongsterrSong:
     def __init__(self,
@@ -320,6 +333,7 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
                 difficulty=track_difficulty,
                 capo=track_data.capo,
                 measures=track_data.measures,
+                note_a_freq=track_data.note_a_freq,
             ))
         songs.append(song)
     return songs
@@ -587,7 +601,7 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
                 "file": _get_arrangement_filename(track),
                 "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
                 "capo": track.capo,
-                "centOffset": 0,
+                "centOffset": _cent_offset_from_note_a_freq(track.note_a_freq),
             } for track in song.tracks
         ],
         "stems": [{

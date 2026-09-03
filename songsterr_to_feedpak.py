@@ -27,6 +27,8 @@ CONFIG_ANCHOR_MARGIN_BEATS = 0.1
 CONFIG_SUSTAIN_MARGIN_BEATS = 0.2
 # Number of frets to slide for unpitched slides
 CONFIG_UNPITCHED_SLIDE_WIDTH = 5
+# Duration of preview audio clip
+CONFIG_PREVIEW_SECS = 30
 
 def get_note_name(note: int):
     return [
@@ -280,10 +282,11 @@ class SongsterrSong:
         self.video_sync_times = video_sync_times
 
 class Mp3:
-    def __init__(self, data: bytes, duration: float, thumbnail: Optional[bytes] = None):
+    def __init__(self, data: bytes, duration: float, thumbnail: Optional[bytes] = None, preview: Optional[bytes] = None):
         self.data = data
         self.duration = duration
         self.thumbnail = thumbnail
+        self.preview = preview
 
 async def _fetch(url) -> str:
     print(f"Fetching {url}")
@@ -360,7 +363,7 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
         ))
     return results
 
-async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False) -> Mp3:
+async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False, include_preview: bool=False) -> Mp3:
     # TODO: make async
     try:
         print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
@@ -388,8 +391,20 @@ async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False) -> 
 
             duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
+            if include_preview:
+                preview_file = os.path.join(tmp_dir, "preview.mp3")
+                preview_start = max(min(duration / 2, duration - CONFIG_PREVIEW_SECS), 0)
+                preview_duration = min(CONFIG_PREVIEW_SECS, duration)
+                ffmpeg.input(tmp_file).output(preview_file,
+                                              ss=preview_start,
+                                              t=preview_duration).run(overwrite_output=True)
+                with open(preview_file, 'rb') as f:
+                    preview = f.read()
+            else:
+                preview = None
+
             with open(tmp_file, 'rb') as f:
-                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail)
+                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
     finally:
         print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
@@ -401,6 +416,9 @@ def _get_stem_filename(song: SongsterrSong) -> str:
 
 def _get_cover_filename() -> str:
     return "cover.jpg"
+
+def _get_preview_filename() -> str:
+    return "preview.mp3"
 
 def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_notes = []
@@ -617,6 +635,8 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
     }
     if mp3.thumbnail:
         manifest["cover"] = _get_cover_filename()
+    if mp3.preview:
+        manifest["preview"] = _get_preview_filename()
     return yaml.dump(manifest)
 
 def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
@@ -636,9 +656,13 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
     files[_get_stem_filename(song)] = mp3.data
     if mp3.thumbnail:
         files[_get_cover_filename()] = mp3.thumbnail
+    if mp3.preview:
+        files[_get_preview_filename()] = mp3.preview
     return files
 
-async def download_songsterr_song_to_feedpak(song_id: int, include_thumbnail: bool=False) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+async def download_songsterr_song_to_feedpak(song_id: int,
+                                             include_thumbnail: bool=False,
+                                             include_preview: bool=False) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     exc = None
     songs = await download_songsterr_song(song_id)
     for song in songs:
@@ -648,7 +672,9 @@ async def download_songsterr_song_to_feedpak(song_id: int, include_thumbnail: bo
             track for track in song.tracks
             if track.tuning and Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
         try:
-            mp3 = await download_youtube_mp3(song.yt_video_id, include_thumbnail)
+            mp3 = await download_youtube_mp3(song.yt_video_id,
+                                             include_thumbnail=include_thumbnail,
+                                             include_preview=include_preview)
         except Exception as e:
             exc = e
         else:
@@ -666,7 +692,9 @@ async def _handle_download(args):
     if not has_ffmpeg():
         raise RuntimeError("ffmpeg is not installed")
 
-    song, _, feedpak = await download_songsterr_song_to_feedpak(args.download, args.thumbnail)
+    song, _, feedpak = await download_songsterr_song_to_feedpak(args.download,
+                                                               include_thumbnail=args.thumbnail,
+                                                               include_preview=args.preview)
 
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
     if args.output:
@@ -708,6 +736,7 @@ async def main():
     parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
     parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
     parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
+    parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")
     args = parser.parse_args()
 
     if args.download:

@@ -360,7 +360,7 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
         ))
     return results
 
-async def download_youtube_mp3(video_id: str) -> Mp3:
+async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False) -> Mp3:
     # TODO: make async
     try:
         print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
@@ -378,9 +378,13 @@ async def download_youtube_mp3(video_id: str) -> Mp3:
             tmp_file += '.mp3'
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
-                thumbnail_url = info.get('thumbnail')
-                thumbnail = await _fetch_bytes(thumbnail_url) if thumbnail_url else None
+                if include_thumbnail:
+                    info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+                    thumbnail_url = info.get('thumbnail')
+                    thumbnail = await _fetch_bytes(thumbnail_url) if thumbnail_url else None
+                else:
+                    ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+                    thumbnail = None
 
             duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
@@ -634,7 +638,7 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
         files[_get_cover_filename()] = mp3.thumbnail
     return files
 
-async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+async def download_songsterr_song_to_feedpak(song_id: int, include_thumbnail: bool=False) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     exc = None
     songs = await download_songsterr_song(song_id)
     for song in songs:
@@ -644,7 +648,7 @@ async def download_songsterr_song_to_feedpak(song_id: int) -> Tuple[SongsterrSon
             track for track in song.tracks
             if track.tuning and Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
         try:
-            mp3 = await download_youtube_mp3(song.yt_video_id)
+            mp3 = await download_youtube_mp3(song.yt_video_id, include_thumbnail)
         except Exception as e:
             exc = e
         else:
@@ -662,7 +666,7 @@ async def _handle_download(args):
     if not has_ffmpeg():
         raise RuntimeError("ffmpeg is not installed")
 
-    song, _, feedpak = await download_songsterr_song_to_feedpak(args.download)
+    song, _, feedpak = await download_songsterr_song_to_feedpak(args.download, args.thumbnail)
 
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
     if args.output:
@@ -703,6 +707,7 @@ async def main():
     group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
     parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
     parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
+    parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
     args = parser.parse_args()
 
     if args.download:

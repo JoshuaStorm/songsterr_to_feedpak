@@ -480,7 +480,8 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     prev_notes[string]["sus"] += duration_semibreves * secs_per_semibreve
                     continue
 
-                fret = note["fret"]
+                string_mute = note.get("dead", False)
+                fret = note["fret"] if not string_mute else 0
                 hopo_delta = fret - hopo_from.get(string, fret)
 
                 # Set previous note's slide to this note's fret
@@ -501,7 +502,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
                     "hm": note.get("harmonic") == "natural", # Natural harmonic
                     "hp": note.get("harmonic") in ("pinch", "artificial"), # Pinch harmonic
                     "pm": palm_mute, # Palm mute
-                    "mt": note.get("dead", False), # String mute
+                    "mt": string_mute, # String mute
                     "vb": note.get("vibrato", False), # Vibrato
                     "tr": tremelo, # Tremolo
                     "ac": note.get("accentuated", False) or note.get("staccato", False), # Accent (also do staccato)

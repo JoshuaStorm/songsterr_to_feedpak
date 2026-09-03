@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Kevin Lu
 
-from typing import Callable, Optional, Tuple, Union
+from typing import Callable, Generator, Optional, Tuple, Union
 from functools import cmp_to_key
 import math
 import os
@@ -420,6 +420,34 @@ def _get_cover_filename() -> str:
 def _get_preview_filename() -> str:
     return "preview.mp3"
 
+def _iterate_measures(measures: list) -> Generator[Tuple[dict, bool], None, None]:
+    i = 0
+    wildcard = object()
+    current_alternate_endings = set([wildcard])
+    alternate_endings = []
+    while i < len(measures):
+        measure = measures[i]
+
+        if alternate_endings and "alternateEnding" in measure:
+            current_alternate_endings = set(measure["alternateEnding"])
+
+        if measure.get("repeatStart") or alternate_endings:
+            alternate_endings.append(current_alternate_endings)
+
+        if not alternate_endings:
+            yield measure, False
+
+        if "repeat" in measure:
+            repeat_count = measure["repeat"]
+            for repeat_number in range(1, repeat_count + 1):
+                for j, cur_ae in enumerate(alternate_endings):
+                    if next(iter(cur_ae)) is wildcard or repeat_number in cur_ae:
+                        yield measures[i - len(alternate_endings) + j + 1], repeat_number > 1
+
+            current_alternate_endings = set([wildcard])
+            alternate_endings = []
+        i += 1
+
 def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     fp_notes = []
     fp_chords = []
@@ -436,7 +464,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
     slides = set() # Strings that are currently sliding
     prev_notes = {} # Map of string -> the previous note on that string
 
-    for measure_num, measure in enumerate(track.measures):
+    for measure_num, (measure, is_repeat) in enumerate(_iterate_measures(track.measures)):
         # Calculate the length of measure
         beats = measure["voices"][0]["beats"]
         semibreves_in_measure = sum(
@@ -456,7 +484,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         secs_per_semibreve = (next_measure_t - t) / semibreves_in_measure
 
         # Add section
-        if "marker" in measure:
+        if "marker" in measure and not is_repeat:
             section_name = measure["marker"]["text"]
             fp_sections.append({
                 "name": section_name,

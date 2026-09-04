@@ -228,7 +228,7 @@ class _VideoSyncData:
             if lhs_is_special_type != rhs_is_special_type:
                 return int(lhs_is_special_type) - int(rhs_is_special_type)
             return lhs["_index"] - rhs["_index"]
-            
+
         videos = json.loads(text)
         for i, video in enumerate(videos):
             video["_index"] = i
@@ -801,9 +801,9 @@ def has_ffmpeg() -> bool:
 def has_ffmpeg_rubberband_filter():
     try:
         result = subprocess.run(
-            ["ffmpeg", "-filters"], 
-            capture_output=True, 
-            text=True, 
+            ["ffmpeg", "-filters"],
+            capture_output=True,
+            text=True,
             check=True)
         return "rubberband" in result.stdout
     except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
@@ -894,6 +894,6 @@ async def main():
         args.download = results[0].song_id
         await _handle_download(args)
     print("==== DONE ====")
-        
+
 if __name__ == "__main__":
     asyncio.run(main())

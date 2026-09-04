@@ -12,6 +12,7 @@ import asyncio
 import argparse
 import shutil
 import re
+import subprocess
 
 import yaml
 import bs4
@@ -48,10 +49,17 @@ def get_note_name(note: int):
         'Eb',
     ][note % 12]
 
-def _cent_offset_from_note_a_freq(note_a_freq: Optional[int]) -> int:
-    if note_a_freq is None:
-        return 0
-    return round(1200 * math.log2(note_a_freq / 440))
+def _round(x):
+    if x >= 0.0:
+        return math.floor(x + 0.5)
+    else:
+        return math.ceil(x - 0.5)
+
+def _note_a_freq_to_cent_offset(note_a_freq: int) -> int:
+    return _round(1200 * math.log2(note_a_freq / 440))
+
+def _cents_to_pitch_ratio(cents: int) -> float:
+    return 2 ** (cents / 1200)
 
 class _TuningShape:
     def __init__(self, deltas: list[int], formatter: Callable[[list[int]], str]):
@@ -86,6 +94,9 @@ class Tuning:
             shape = _TuningShape(deltas,
                                  lambda strings: " ".join(get_note_name(n) for n in reversed(strings)))
         self.name = shape.formatter(strings)
+
+    def add_semitones(self, semitones: int) -> "Tuning":
+        return Tuning([n + semitones for n in self.strings])
 
 # Only support up to 8 strings
 _STANDARD_TUNING = [-10, -5, 0, 5, 10, 15, 19, 24]
@@ -155,7 +166,7 @@ class _TrackData:
                  tuning: Optional[Tuning],
                  capo: int,
                  measures: list[dict],
-                 note_a_freq: Optional[int]):
+                 note_a_freq: int):
         self.string_count = string_count
         self.tuning = tuning
         self.capo = capo
@@ -165,7 +176,7 @@ class _TrackData:
     @staticmethod
     def extract(text: str) -> "_TrackData":
         match = re.search(r"\b(\d+) ?[Hh][Zz]\b", text)
-        note_a_freq = int(match.group(1)) if match else None
+        note_a_freq = int(match.group(1)) if match else 440
         json_data = json.loads(text)
         return _TrackData(
             string_count=json_data["strings"],
@@ -257,7 +268,7 @@ class SongsterrTrack:
                  capo: int,
                  difficulty: Optional[int],
                  measures: list[dict],
-                 note_a_freq: Optional[int]):
+                 cent_offset: int):
         self.song = song
         self.track_id = track_id
         self.name = name or instrument
@@ -266,7 +277,7 @@ class SongsterrTrack:
         self.capo = capo
         self.difficulty = difficulty
         self.measures = measures
-        self.note_a_freq = note_a_freq
+        self.cent_offset = cent_offset
 
 class SongsterrSong:
     def __init__(self,
@@ -289,6 +300,9 @@ class Mp3:
         self.duration = duration
         self.thumbnail = thumbnail
         self.preview = preview
+
+class YoutubeDownloadError(Exception):
+    pass
 
 async def _fetch(url) -> str:
     print(f"Fetching {url}")
@@ -338,7 +352,7 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
                 difficulty=track_difficulty,
                 capo=track_data.capo,
                 measures=track_data.measures,
-                note_a_freq=track_data.note_a_freq,
+                cent_offset=_note_a_freq_to_cent_offset(track_data.note_a_freq),
             ))
         songs.append(song)
     return songs
@@ -365,23 +379,26 @@ async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> 
         ))
     return results
 
-async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False, include_preview: bool=False) -> Mp3:
+async def download_youtube_mp3(video_id: str,
+                               include_thumbnail: bool=False,
+                               include_preview: bool=False,
+                               retune_by_cents: int=0) -> Mp3:
     # TODO: make async
-    try:
-        print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_file =  os.path.join(tmp_dir, video_id)
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '0',
-                }],
-                'outtmpl': tmp_file,
-            }
-            tmp_file += '.mp3'
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_file =  os.path.join(tmp_dir, video_id)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '0',
+            }],
+            'outtmpl': tmp_file,
+        }
+        tmp_file += '.mp3'
 
+        print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
+        try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 if include_thumbnail:
                     info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
@@ -390,10 +407,27 @@ async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False, inc
                 else:
                     ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
                     thumbnail = None
+        except Exception as e:
+            raise YoutubeDownloadError(f"Failed to download YouTube video {video_id}: {e}") from e
+        finally:
+            print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
-            duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
+        if retune_by_cents:
+            print(f"==== BEGIN RETUNING ====")
+            try:
+                pitch_ratio = _cents_to_pitch_ratio(retune_by_cents)
+                retuned_file = os.path.join(tmp_dir, "retuned.mp3")
+                ffmpeg.input(tmp_file).output(retuned_file,
+                                              af=f"rubberband=pitch={pitch_ratio}").run(overwrite_output=True)
+                tmp_file = retuned_file
+            finally:
+                print(f"==== END RETUNING ====")
 
-            if include_preview:
+        duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
+
+        if include_preview:
+            print(f"==== BEGIN PREVIEW GENERATION ====")
+            try:
                 preview_file = os.path.join(tmp_dir, "preview.mp3")
                 preview_start = max(min(duration / 2, duration - CONFIG_PREVIEW_SECS), 0)
                 preview_duration = min(CONFIG_PREVIEW_SECS, duration)
@@ -402,16 +436,16 @@ async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False, inc
                                               t=preview_duration).run(overwrite_output=True)
                 with open(preview_file, 'rb') as f:
                     preview = f.read()
-            else:
-                preview = None
+            finally:
+                print(f"==== END PREVIEW GENERATION ====")
+        else:
+            preview = None
 
-            with open(tmp_file, 'rb') as f:
-                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
-    finally:
-        print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
+        with open(tmp_file, 'rb') as f:
+            return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
 
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
-    return f"arrangements/{track.track_id}_{_to_valid_filename(track.name)}.json"
+    return f"arrangements/{track.track_id} - {_to_valid_filename(track.name)}.json"
 
 def _get_song_timeline_filename() -> str:
     return "song_timeline.json"
@@ -661,12 +695,12 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
         "song_timeline": _get_song_timeline_filename(),
         "arrangements": [
             {
-                "id": f"{track.track_id}_{_to_valid_filename(track.name)}",
+                "id": f"{track.track_id} - {_to_valid_filename(track.name)}",
                 "name": track.name,
                 "file": _get_arrangement_filename(track),
                 "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
                 "capo": track.capo,
-                "centOffset": _cent_offset_from_note_a_freq(track.note_a_freq),
+                "centOffset": track.cent_offset,
             } for track in song.tracks
         ],
         "stems": [{
@@ -704,41 +738,73 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
         files[_get_preview_filename()] = mp3.preview
     return files
 
+def _cents_improper_to_mixed(cents: int) -> Tuple[int, int]:
+    semitones = int(_round(cents / 100))
+    remainder_cents = cents - (semitones * 100)
+    return semitones, remainder_cents
+
 async def download_songsterr_song_to_feedpak(song_id: int,
                                              include_thumbnail: bool=False,
-                                             include_preview: bool=False) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+                                             include_preview: bool=False,
+                                             retune_by_cents: int=0) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     exc = None
     songs = await download_songsterr_song(song_id)
     for song in songs:
         if song != songs[0]:
             print(f"Trying next alternative youtube video")
-        song.tracks = [
-            track for track in song.tracks
-            if track.tuning and Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS)]
+
+        tracks = []
+        for track in song.tracks:
+            if Instrument.get(track.instrument) not in (Instrument.GUITAR, Instrument.BASS):
+                continue
+            if not track.tuning:
+                continue
+            retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
+            track.tuning = track.tuning.add_semitones(retune_semitones)
+            track.cent_offset = retune_cents
+            tracks.append(track)
+        song.tracks = tracks
+
         try:
             mp3 = await download_youtube_mp3(song.yt_video_id,
                                              include_thumbnail=include_thumbnail,
-                                             include_preview=include_preview)
-        except Exception as e:
+                                             include_preview=include_preview,
+                                             retune_by_cents=retune_by_cents)
+        except YoutubeDownloadError as e:
             exc = e
         else:
             feedpak = build_feedpak(song, mp3)
             return song, mp3, feedpak
+
     raise exc or ValueError("No valid tracks found for this song")
 
 def has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
 
+def has_ffmpeg_rubberband_filter():
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-filters"], 
+            capture_output=True, 
+            text=True, 
+            check=True)
+        return "rubberband" in result.stdout
+    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
+        return False
+
 async def _handle_download(args):
     print(f"==== DOWNLOAD SONG ====")
 
-    # Need ffmpeg for youtube download
+    # Need ffmpeg for youtube download and audio processing
     if not has_ffmpeg():
         raise RuntimeError("ffmpeg is not installed")
+    if args.retune_by and not has_ffmpeg_rubberband_filter():
+        raise RuntimeError("Retuning requires ffmpeg with the rubberband filter installed")
 
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download,
                                                                include_thumbnail=args.thumbnail,
-                                                               include_preview=args.preview)
+                                                               include_preview=args.preview,
+                                                               retune_by_cents=args.retune_by)
 
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
     if args.output:
@@ -780,15 +846,16 @@ async def _handle_search(args) -> list[SongsterrSongSearchResult]:
 
 async def main():
     parser = argparse.ArgumentParser()
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-D", "--download", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
-    group.add_argument("-s", "--search", metavar="QUERY", type=str, help="Search Songsterr for a song.")
-    group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
+    cmd_group = parser.add_mutually_exclusive_group(required=True)
+    cmd_group.add_argument("-D", "--download", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
+    cmd_group.add_argument("-s", "--search", metavar="QUERY", type=str, help="Search Songsterr for a song.")
+    cmd_group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
     parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
     parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
-    parser.add_argument("-r", "--remove-existing", action="store_true", help="Delete the existing file or folder at the destination path before creating the feedpak.")
+    parser.add_argument("-R", "--remove-existing", action="store_true", help="Delete the existing file or folder at the destination path before creating the feedpak.")
     parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
     parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")
+    parser.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help="Change the audio pitch by the given number of cents (1 semitone=100 cents).")
     args = parser.parse_args()
 
     if args.download:

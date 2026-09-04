@@ -806,14 +806,15 @@ async def _handle_download(args):
                                                                include_preview=args.preview,
                                                                retune_by_cents=args.retune_by)
 
+    artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
     if args.output:
         if os.path.isdir(args.output):
-            feedpak_dst = os.path.join(args.output, default_filename)
+            feedpak_dst = os.path.join(args.output, artist_dir, default_filename)
         else:
             feedpak_dst = args.output
     else:
-        feedpak_dst = default_filename
+        feedpak_dst = os.path.join(artist_dir, default_filename)
 
     if args.remove_existing:
         if os.path.exists(feedpak_dst):
@@ -821,6 +822,9 @@ async def _handle_download(args):
                 shutil.rmtree(feedpak_dst)
             else:
                 os.remove(feedpak_dst)
+
+    if args.artist_folder:
+        os.makedirs(os.path.dirname(feedpak_dst), exist_ok=True)
 
     if args.folder:
         for filename, data in feedpak.items():
@@ -852,6 +856,7 @@ async def main():
     cmd_group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
     parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
     parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
+    parser.add_argument("-a", "--artist-folder", action="store_true", help="Create a folder for the artist and place the feedpak inside it.")
     parser.add_argument("-R", "--remove-existing", action="store_true", help="Delete the existing file or folder at the destination path before creating the feedpak.")
     parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
     parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")

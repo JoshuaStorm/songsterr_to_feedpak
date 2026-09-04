@@ -29,6 +29,8 @@ CONFIG_SUSTAIN_MARGIN_BEATS = 0.2
 CONFIG_UNPITCHED_SLIDE_WIDTH = 5
 # Duration of preview audio clip
 CONFIG_PREVIEW_SECS = 30
+# Duration of default generated sections if no sections are present
+CONFIG_DEFAULT_SECTION_SECS = 30
 
 def get_note_name(note: int):
     return [
@@ -617,13 +619,18 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             note["sus"] -= secs_per_beat * CONFIG_SUSTAIN_MARGIN_BEATS
         del note["spsb"]
 
-    # Add a default section if there are no sections
+    # Add default sections if there are no sections
     if not fp_sections:
-        fp_sections.append({
-            "name": "Song",
-            "number": 1,
-            "time": 0,
-        })
+        time = 0
+        number = 1
+        while time < t:
+            fp_sections.append({
+                "name": "Section",
+                "number": number,
+                "time": time,
+            })
+            time += CONFIG_DEFAULT_SECTION_SECS
+            number += 1
 
     return json.dumps({
         "name": track.name,

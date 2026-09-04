@@ -61,6 +61,14 @@ def _note_a_freq_to_cent_offset(note_a_freq: int) -> int:
 def _cents_to_pitch_ratio(cents: int) -> float:
     return 2 ** (cents / 1200)
 
+def _mode(values: list[int]) -> int:
+    if not values:
+        return 0
+    counts = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    return max(counts, key=counts.get)
+
 class _TuningShape:
     def __init__(self, deltas: list[int], formatter: Callable[[list[int]], str]):
         self.deltas = deltas
@@ -413,7 +421,7 @@ async def download_youtube_mp3(video_id: str,
             print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
         if retune_by_cents:
-            print(f"==== BEGIN RETUNING ====")
+            print(f"==== BEGIN RETUNING {retune_by_cents}c ====")
             try:
                 pitch_ratio = _cents_to_pitch_ratio(retune_by_cents)
                 retuned_file = os.path.join(tmp_dir, "retuned.mp3")
@@ -421,7 +429,7 @@ async def download_youtube_mp3(video_id: str,
                                               af=f"rubberband=pitch={pitch_ratio}").run(overwrite_output=True)
                 tmp_file = retuned_file
             finally:
-                print(f"==== END RETUNING ====")
+                print(f"==== END RETUNING {retune_by_cents}c ====")
 
         duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
@@ -746,7 +754,7 @@ def _cents_improper_to_mixed(cents: int) -> Tuple[int, int]:
 async def download_songsterr_song_to_feedpak(song_id: int,
                                              include_thumbnail: bool=False,
                                              include_preview: bool=False,
-                                             retune_by_cents: int=0) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+                                             retune_by_cents: Optional[int]=0) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     exc = None
     songs = await download_songsterr_song(song_id)
     for song in songs:
@@ -754,12 +762,21 @@ async def download_songsterr_song_to_feedpak(song_id: int,
             print(f"Trying next alternative youtube video")
 
         tracks = []
+        cent_offsets = []
         for track in song.tracks:
             if Instrument.get(track.instrument) not in (Instrument.GUITAR, Instrument.BASS):
                 continue
             if not track.tuning:
                 continue
-            retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
+
+            cent_offsets.append(track.cent_offset)
+            if retune_by_cents is None:
+                # Auto-zero out the cent offset
+                retune_semitones = 0
+                retune_cents = 0
+            else:
+                retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
+
             track.tuning = track.tuning.add_semitones(retune_semitones)
             track.cent_offset = retune_cents
             tracks.append(track)
@@ -769,7 +786,7 @@ async def download_songsterr_song_to_feedpak(song_id: int,
             mp3 = await download_youtube_mp3(song.yt_video_id,
                                              include_thumbnail=include_thumbnail,
                                              include_preview=include_preview,
-                                             retune_by_cents=retune_by_cents)
+                                             retune_by_cents=retune_by_cents or -_mode(cent_offsets))
         except YoutubeDownloadError as e:
             exc = e
         else:
@@ -798,13 +815,16 @@ async def _handle_download(args):
     # Need ffmpeg for youtube download and audio processing
     if not has_ffmpeg():
         raise RuntimeError("ffmpeg is not installed")
-    if args.retune_by and not has_ffmpeg_rubberband_filter():
+    if (args.retune_by or args.zero_cents) and not has_ffmpeg_rubberband_filter():
         raise RuntimeError("Retuning requires ffmpeg with the rubberband filter installed")
+
+    # retune_by_cents=None means zero out the cent offset
+    retune_by_cents = None if args.zero_cents else args.retune_by
 
     song, _, feedpak = await download_songsterr_song_to_feedpak(args.download,
                                                                include_thumbnail=args.thumbnail,
                                                                include_preview=args.preview,
-                                                               retune_by_cents=args.retune_by)
+                                                               retune_by_cents=retune_by_cents)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
@@ -861,6 +881,7 @@ async def main():
     parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
     parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")
     parser.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help="Change the audio pitch by the given number of cents (1 semitone=100 cents).")
+    parser.add_argument("-z", "--zero-cents", action="store_true", help="Zero out the cent offset.")
     args = parser.parse_args()
 
     if args.download:

@@ -413,6 +413,9 @@ async def download_youtube_mp3(video_id: str, include_thumbnail: bool=False, inc
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
     return f"arrangements/{track.track_id}_{_to_valid_filename(track.name)}.json"
 
+def _get_song_timeline_filename() -> str:
+    return "song_timeline.json"
+
 def _get_stem_filename(song: SongsterrSong) -> str:
     return f"stems/full_{song.yt_video_id}.mp3"
 
@@ -450,7 +453,7 @@ def _iterate_measures(measures: list) -> Generator[Tuple[dict, bool], None, None
             alternate_endings = []
         i += 1
 
-def build_feedpak_arrangement(track: SongsterrTrack) -> str:
+def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[str, str]:
     fp_notes = []
     fp_chords = []
     fp_anchors = []
@@ -632,7 +635,7 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
             time += CONFIG_DEFAULT_SECTION_SECS
             number += 1
 
-    return json.dumps({
+    arrangement = json.dumps({
         "name": track.name,
         "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
         "capo": track.capo,
@@ -641,9 +644,12 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> str:
         "anchors": fp_anchors,
         "handshapes": [],
         "templates": [],
+    })
+    song_timeline = json.dumps({
         "beats": fp_beats,
         "sections": fp_sections,
     })
+    return arrangement, song_timeline
 
 def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
     manifest = {
@@ -652,6 +658,7 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
         "title": song.title,
         "artist": song.artist,
         "duration": mp3.duration,
+        "song_timeline": _get_song_timeline_filename(),
         "arrangements": [
             {
                 "id": f"{track.track_id}_{_to_valid_filename(track.name)}",
@@ -687,7 +694,9 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
     files = {}
     files["manifest.yaml"] = build_feedpak_manifest(song, mp3)
     for track in song.tracks:
-        files[_get_arrangement_filename(track)] = build_feedpak_arrangement(track)
+        arrangement, song_timeline = build_feedpak_arrangement_and_song_timeline(track)
+        files[_get_arrangement_filename(track)] = arrangement
+        files[_get_song_timeline_filename()] = song_timeline
     files[_get_stem_filename(song)] = mp3.data
     if mp3.thumbnail:
         files[_get_cover_filename()] = mp3.thumbnail

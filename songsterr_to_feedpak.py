@@ -727,7 +727,11 @@ def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for filename, data in files.items():
-            zip_file.writestr(filename, data)
+            if isinstance(data, bytes):
+                # MP3 files are already compressed so don't compress them again
+                zip_file.writestr(filename, data, compress_type=zipfile.ZIP_STORED)
+            else:
+                zip_file.writestr(filename, data)
     return zip_buffer.getvalue()
 
 def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]:

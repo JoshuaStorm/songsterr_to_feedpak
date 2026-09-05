@@ -785,12 +785,14 @@ async def download_songsterr_song_to_feedpak(song_id: int,
             track.cent_offset = retune_cents
             tracks.append(track)
         song.tracks = tracks
+        if retune_by_cents is None:
+            retune_by_cents = -_mode(cent_offsets)
 
         try:
             mp3 = await download_youtube_mp3(song.yt_video_id,
                                              include_thumbnail=include_thumbnail,
                                              include_preview=include_preview,
-                                             retune_by_cents=retune_by_cents or -_mode(cent_offsets))
+                                             retune_by_cents=retune_by_cents)
         except YoutubeDownloadError as e:
             exc = e
         else:

@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Kevin Lu
 
-from typing import Callable, Generator, Optional, Tuple, Union
-from functools import cmp_to_key
+from typing import Callable, Generator, Optional, Union
+from typing import NamedTuple
+import functools
 import math
 import os
 import tempfile
@@ -14,54 +15,69 @@ import shutil
 import re
 import subprocess
 
+# External dependencies
 import yaml
 import bs4
 import httpx
 import yt_dlp
 import ffmpeg
 
+# songsterr_to_feedpak version number to be embedded in the feedpak manifest
+CONFIG_SONGSTERR_TO_FEEDPAK_VERSION = "0.0.0"
 # Minimum number of frets in anchor
 CONFIG_ANCHOR_MIN_WIDTH = 4
-# Amount of time to move the anchor back, measured in beats
-CONFIG_ANCHOR_MARGIN_BEATS = 0.1
 # Amount of sustain to remove at the end, measured in beats
 CONFIG_SUSTAIN_MARGIN_BEATS = 0.2
 # Number of frets to slide for unpitched slides
 CONFIG_UNPITCHED_SLIDE_WIDTH = 5
 # Duration of preview audio clip
 CONFIG_PREVIEW_SECS = 30
-# Duration of default generated sections if no sections are present
-CONFIG_DEFAULT_SECTION_SECS = 30
+# Duration of default generated sections if no sections are present, measured in measures
+CONFIG_DEFAULT_SECTION_MEASURES = 32
+# For empty section substitution, the number of measures at the start and end
+# of the section that can be ignored when determining if the section is empty.
+CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES = 2
 
-def get_note_name(note: int):
+################################################################
+# Utilities
+################################################################
+
+def get_note_name(note: int, use_sharps: bool=False) -> str:
+    """
+    Get the name of a note.
+    Notes are numbered from 0 = C0 and increment per semitone.
+    """
     return [
-        'E',
-        'F',
-        'Gb',
-        'G',
-        'Ab',
-        'A',
-        'Bb',
-        'B',
-        'C',
-        'Db',
-        'D',
-        'Eb',
-    ][note % 12]
+        ("C" , "C" ),
+        ("Db", "C#"),
+        ("D" , "D" ),
+        ("Eb", "D#"),
+        ("E" , "E" ),
+        ("F" , "F" ),
+        ("Gb", "F#"),
+        ("G" , "G" ),
+        ("Ab", "G#"),
+        ("A" , "A" ),
+        ("Bb", "A#"),
+        ("B" , "B" ),
+    ][note % 12][int(use_sharps)]
 
-def _round(x):
+def _round(x: float) -> int:
+    """
+    Round to the nearest integer.
+    Midpoint are rounded away from zero.
+    """
     if x >= 0.0:
         return math.floor(x + 0.5)
     else:
         return math.ceil(x - 0.5)
 
-def _note_a_freq_to_cent_offset(note_a_freq: int) -> int:
-    return _round(1200 * math.log2(note_a_freq / 440))
-
-def _cents_to_pitch_ratio(cents: int) -> float:
-    return 2 ** (cents / 1200)
-
 def _mode(values: list[int]) -> int:
+    """
+    Return the mode of a list of values.
+    If there are multiple modes, return the first one found.
+    If the list is empty, return 0.
+    """
     if not values:
         return 0
     counts = {}
@@ -69,7 +85,55 @@ def _mode(values: list[int]) -> int:
         counts[v] = counts.get(v, 0) + 1
     return max(counts, key=counts.get)
 
+def _list_find(lst: list, predicate: Callable[[any], bool]) -> Optional[any]:
+    """
+    Find the first item in a list that satisfies the predicate.
+    If no item is found, return None.
+    """
+    for item in lst:
+        if predicate(item):
+            return item
+    return None
+
+def _note_a_freq_to_cent_offset(note_a_freq: int) -> int:
+    """
+    Convert a frequency to a cent offset from A4.
+    """
+    return _round(1200 * math.log2(note_a_freq / 440))
+
+def _cents_to_freq_ratio(cents: int) -> float:
+    """
+    Convert a cent offset to a frequency ratio.
+    """
+    return 2 ** (cents / 1200)
+
+def _cents_improper_to_mixed(cents: int) -> tuple[int, int]:
+    """
+    Convert a cent offset to a semitone offset and cent remainder.
+    """
+    semitones = int(_round(cents / 100))
+    remainder_cents = cents - (semitones * 100)
+    return semitones, remainder_cents
+
+def _to_valid_filename(name: str) -> str:
+    """
+    Convert a string to a valid filename by filtering invalid characters.
+    """
+    name = name.replace("|", "-")
+    s = "".join(c for c in name if c.isalnum() or c in " ._-").strip()
+    return s or "file"
+
+################################################################
+# Tuning
+################################################################
+
 class _TuningShape:
+    """
+    Represents a tuning shape (list of semitone deltas between strings, bottom string first).
+    A formatter is included to generate a human-readable name for the tuning
+    given the actual string notes (bottom string first).
+    """
+
     def __init__(self, deltas: list[int], formatter: Callable[[list[int]], str]):
         self.deltas = deltas
         self.formatter = formatter
@@ -80,21 +144,22 @@ _TuningShape.DROP = _TuningShape([-5, -4, -5, -5, -7],
                     lambda strings: f"{get_note_name(strings[0])} DROP {get_note_name(strings[5])}")
 _TuningShape.BASS_STD = _TuningShape([-5, -5, -5],
                     lambda strings: f"Bass {get_note_name(strings[3])} STD")
-
-_TUNING_SHAPES = [
+_TuningShape.COMMON_SHAPES = [
     _TuningShape.STD,
     _TuningShape.DROP,
     _TuningShape.BASS_STD,
 ]
 
 class Tuning:
+    """
+    A tuning defined by a list of string notes, bottom string first.
+    Notes are numbered from 0 = C0 and increment per semitone.
+    """
+
     def __init__(self, strings: list[int]):
-        """
-        strings: Top string first. 0 = Low E string of E STD.
-        """
         self.strings = strings
         deltas = [strings[i + 1] - strings[i] for i in range(len(strings) - 1)]
-        for shape in _TUNING_SHAPES:
+        for shape in _TuningShape.COMMON_SHAPES:
             if deltas == shape.deltas:
                 shape = shape
                 break
@@ -106,12 +171,21 @@ class Tuning:
     def add_semitones(self, semitones: int) -> "Tuning":
         return Tuning([n + semitones for n in self.strings])
 
-# Only support up to 8 strings
-_STANDARD_TUNING = [-10, -5, 0, 5, 10, 15, 19, 24]
+# 8-string E standard tuning.
+# Note that notes are written an octave higher than they actually sound.
+Tuning.E_STD8 = Tuning([64, 59, 55, 50, 45, 40, 35, 30])
 
-def _tuning_subtract(lhs: list[int], rhs: list[int]) -> list[int]:
-    cmp_len = min(len(lhs), len(rhs))
-    return [l - r for l, r in zip(lhs[-cmp_len:], rhs[-cmp_len:])]
+def _tuning_subtract(lhs: Tuning, rhs: Tuning) -> list[int]:
+    """
+    Subtract two tunings to get the semitone deltas between them.
+    If the tunings have different numbers of strings, only the common bottom strings are compared.
+    """
+    cmp_len = min(len(lhs.strings), len(rhs.strings))
+    return [l - r for l, r in zip(lhs.strings[:cmp_len], rhs.strings[:cmp_len])]
+
+################################################################
+# Songsterr web API
+################################################################
 
 def _get_song_url(song_id: int) -> str:
     return f"https://www.songsterr.com/a/wsa/s{song_id}"
@@ -125,193 +199,6 @@ def _get_video_sync_url(song: str, revision: str) -> str:
 def _get_search_url(query: str, from_index: int, count: int) -> str:
     return f"https://www.songsterr.com/api/search?pattern={query}&size={count}&from={from_index}"
 
-def _to_valid_filename(name: str) -> str:
-    name = name.replace("|", "-")
-    s = "".join(c for c in name if c.isalnum() or c in " ._-").strip()
-    return s or "file"
-
-class _SongData:
-    def __init__(self,
-                 song_id: int,
-                 revision: int,
-                 image: str,
-                 names: list[str],
-                 instruments: list[str],
-                 track_difficulties: list[Optional[int]],
-                 tags: list[str],
-                 artist: str,
-                 title: str):
-            self.song_id = song_id
-            self.revision = revision
-            self.image = image
-            self.names = names
-            self.instruments = instruments
-            self.track_difficulties = track_difficulties
-            self.tags = tags
-            self.artist = artist
-            self.title = title
-
-    @staticmethod
-    def extract(html_text: str) -> "_SongData":
-        soup = bs4.BeautifulSoup(html_text, "html.parser")
-        j = soup.find(id="state").text
-        data = json.loads(j)["meta"]["current"]
-        return _SongData(
-            song_id=data["songId"],
-            revision=data["revisionId"],
-            image=data["image"],
-            names=[t["name"] for t in data["tracks"]],
-            instruments=[t["instrument"] for t in data["tracks"]],
-            track_difficulties=[t.get("difficulty") for t in data["tracks"]],
-            tags=data["tags"],
-            artist=data["artist"],
-            title=data["title"],
-        )
-
-class _TrackData:
-    def __init__(self,
-                 string_count: int,
-                 tuning: Optional[Tuning],
-                 capo: int,
-                 measures: list[dict],
-                 note_a_freq: int):
-        self.string_count = string_count
-        self.tuning = tuning
-        self.capo = capo
-        self.measures = measures
-        self.note_a_freq = note_a_freq
-
-    @staticmethod
-    def extract(text: str) -> "_TrackData":
-        match = re.search(r"\b(\d+) ?[Hh][Zz]\b", text)
-        note_a_freq = int(match.group(1)) if match else 440
-        json_data = json.loads(text)
-        return _TrackData(
-            string_count=json_data["strings"],
-            tuning=Tuning([n - 40 for n in json_data["tuning"]])
-                        if json_data.get("tuning") else None,
-            capo=json_data.get("capo", 0),
-            measures=json_data["measures"],
-            note_a_freq=note_a_freq,
-        )
-
-class _VideoType:
-    NONE = "none"
-    ALTERNATIVE = "alternative"
-    BACKING = "backing"
-    SOLO = "solo"
-    PLAYTHROUGH = "playthrough"
-
-    @staticmethod
-    def get(feature: Optional[str]) -> str:
-        types = (
-            _VideoType.ALTERNATIVE,
-            _VideoType.BACKING,
-            _VideoType.SOLO,
-            _VideoType.PLAYTHROUGH,
-        )
-        for t in types:
-            if feature == t:
-                return t
-        return _VideoType.NONE
-
-class _VideoSyncData:
-    def __init__(self, video_id: str, measure_times: list[float]):
-        self.video_id = video_id
-        self.measure_times = measure_times
-
-    @staticmethod
-    def extract(text: str) -> list["_VideoSyncData"]:
-        def _cmp_video(lhs, rhs):
-            lhs_is_special_type = _VideoType.get(lhs.get("feature")) not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
-            rhs_is_special_type = _VideoType.get(rhs.get("feature")) not in (_VideoType.NONE, _VideoType.ALTERNATIVE)
-            if lhs_is_special_type != rhs_is_special_type:
-                return int(lhs_is_special_type) - int(rhs_is_special_type)
-            return lhs["_index"] - rhs["_index"]
-
-        videos = json.loads(text)
-        for i, video in enumerate(videos):
-            video["_index"] = i
-
-        return [_VideoSyncData(
-            video_id=video["videoId"],
-            measure_times=video["points"],
-        ) for video in sorted(videos, key=cmp_to_key(_cmp_video))]
-
-class Instrument:
-    GUITAR = "guitar"
-    BASS = "bass"
-    OTHER = "other"
-
-    @staticmethod
-    def get(instrument: str) -> str:
-        if re.search(r"\bguitar\b", instrument, flags=re.IGNORECASE):
-            return Instrument.GUITAR
-        elif re.search(r"\bbass\b", instrument, flags=re.IGNORECASE):
-            return Instrument.BASS
-        else:
-            return Instrument.OTHER
-
-class SongsterrTrackSearchResult:
-    def __init__(self, name: str, instrument: str, tuning: Optional[Tuning], difficulty: Optional[int]):
-        self.name = name or instrument
-        self.instrument = instrument
-        self.tuning = tuning
-        self.difficulty = difficulty
-
-class SongsterrSongSearchResult:
-    def __init__(self, title: str, artist: str, song_id: int, tracks: list[SongsterrTrackSearchResult]):
-        self.title = title
-        self.artist = artist
-        self.song_id = song_id
-        self.tracks = tracks
-
-class SongsterrTrack:
-    def __init__(self,
-                 song: "SongsterrSong",
-                 track_id: int,
-                 name: str,
-                 instrument: str,
-                 tuning: Optional[Tuning],
-                 capo: int,
-                 difficulty: Optional[int],
-                 measures: list[dict],
-                 cent_offset: int):
-        self.song = song
-        self.track_id = track_id
-        self.name = name or instrument
-        self.instrument = instrument
-        self.tuning = tuning
-        self.capo = capo
-        self.difficulty = difficulty
-        self.measures = measures
-        self.cent_offset = cent_offset
-
-class SongsterrSong:
-    def __init__(self,
-                 song_id: int,
-                 title: str,
-                 artist: str,
-                 tracks: list[SongsterrTrack],
-                 yt_video_id: str,
-                 video_sync_times: list[float]):
-        self.song_id = song_id
-        self.title = title
-        self.artist = artist
-        self.tracks = tracks
-        self.yt_video_id = yt_video_id
-        self.video_sync_times = video_sync_times
-
-class Mp3:
-    def __init__(self, data: bytes, duration: float, thumbnail: Optional[bytes] = None, preview: Optional[bytes] = None):
-        self.data = data
-        self.duration = duration
-        self.thumbnail = thumbnail
-        self.preview = preview
-
-class YoutubeDownloadError(Exception):
-    pass
-
 async def _fetch(url) -> str:
     print(f"Fetching {url}")
     async with httpx.AsyncClient() as client:
@@ -324,20 +211,187 @@ async def _fetch_bytes(url) -> bytes:
         response = await client.get(url, follow_redirects=True)
         return response.content
 
+class _SongData(NamedTuple):
+    song_id: int
+    revision: int
+    image: str
+    names: list[str]
+    instruments: list[str]
+    track_difficulties: list[Optional[int]]
+    tags: list[str]
+    artist: str
+    title: str
+
+def _extract_song_data(html_text: str) -> _SongData:
+    soup = bs4.BeautifulSoup(html_text, "html.parser")
+    j = soup.find(id="state").text
+    data = json.loads(j)["meta"]["current"]
+    return _SongData(
+        song_id=data["songId"],
+        revision=data["revisionId"],
+        image=data["image"],
+        names=[t["name"] for t in data["tracks"]],
+        instruments=[t["instrument"] for t in data["tracks"]],
+        track_difficulties=[t.get("difficulty") for t in data["tracks"]],
+        tags=data["tags"],
+        artist=data["artist"],
+        title=data["title"],
+    )
+
+class _TrackData(NamedTuple):
+    string_count: int
+    tuning: Optional[Tuning]
+    capo: int
+    measures: list[dict]
+    note_a_freq: int
+
+def _extract_track_data(json_text: str) -> _TrackData:
+    match = re.search(r"\b(\d+) ?[Hh][Zz]\b", json_text)
+    note_a_freq = int(match.group(1)) if match else 440
+    json_data = json.loads(json_text)
+    return _TrackData(
+        string_count=json_data["strings"],
+        tuning=Tuning(json_data["tuning"]) if json_data.get("tuning") else None,
+        capo=json_data.get("capo", 0),
+        measures=json_data["measures"],
+        note_a_freq=note_a_freq,
+    )
+
+class _VideoSyncData(NamedTuple):
+    video_id: str
+    measure_times: list[float]
+
+def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
+    def get_video_type(video: dict) -> str:
+        types = [
+            "alternative",
+            "backing",
+            "solo",
+            "playthrough",
+        ]
+        feature = video.get("feature")
+        return feature if feature in types else None
+
+    def cmp_video(lhs: dict, rhs: dict) -> int:
+        lhs_is_special_type = get_video_type(lhs) not in (None, "alternative")
+        rhs_is_special_type = get_video_type(rhs) not in (None, "alternative")
+        if lhs_is_special_type != rhs_is_special_type:
+            return int(lhs_is_special_type) - int(rhs_is_special_type)
+        return lhs["_index"] - rhs["_index"]
+
+    videos = json.loads(json_text)
+    for i, video in enumerate(videos):
+        video["_index"] = i
+
+    return [_VideoSyncData(
+        video_id=video["videoId"],
+        measure_times=video["points"],
+    ) for video in sorted(videos, key=functools.cmp_to_key(cmp_video))]
+
+class Instrument:
+    VOCALS = "vocals"
+    RHYTHM_GUITAR = "rhythm_guitar"
+    LEAD_GUITAR = "lead_guitar"
+    BASS = "bass"
+    OTHER = "other"
+
+    @staticmethod
+    def get(instrument: str, track_name: str) -> str:
+        def match(word: str) -> bool:
+            return (re.search(f"\\b{word}\\b", instrument, flags=re.IGNORECASE)
+                 or re.search(f"\\b{word}\\b", track_name, flags=re.IGNORECASE))
+
+        if match("vocals") or match("voice"):
+            return Instrument.VOCALS
+        elif match("lead") or match("solo"):
+            return Instrument.LEAD_GUITAR
+        elif match("rhythm") or match("guitar"):
+            return Instrument.RHYTHM_GUITAR
+        elif match("bass"):
+            return Instrument.BASS
+        else:
+            return Instrument.OTHER
+
+    @staticmethod
+    def is_guitar_or_bass(instrument: str, track_name: str) -> bool:
+        return Instrument.get(instrument, track_name) in (Instrument.RHYTHM_GUITAR, Instrument.LEAD_GUITAR, Instrument.BASS)
+
+class SongsterrTrackSearchResult(NamedTuple):
+    name: str
+    instrument: str
+    tuning: Optional[Tuning]
+    difficulty: Optional[int]
+
+    def get_name(self) -> str:
+        return self.name or self.instrument
+
+class SongsterrSongSearchResult(NamedTuple):
+    title: str
+    artist: str
+    song_id: int
+    tracks: list[SongsterrTrackSearchResult]
+
+def _extract_songsterr_search_results(json_text: str) -> list[SongsterrSongSearchResult]:
+    search_results = json.loads(json_text)
+    results = []
+    for result in search_results["records"]:
+        tracks = []
+        for track in result["tracks"]:
+            tracks.append(SongsterrTrackSearchResult(
+                name=track["name"],
+                instrument=track["instrument"],
+                tuning=Tuning(track["tuning"]) if track.get("tuning") else None,
+                difficulty=track.get("difficulty"),
+            ))
+        results.append(SongsterrSongSearchResult(
+            title=result["title"],
+            artist=result["artist"],
+            song_id=result["songId"],
+            tracks=tracks,
+        ))
+    return results
+
+class SongsterrTrack(NamedTuple):
+    song: "SongsterrSong"
+    track_id: int
+    name: str
+    instrument: str
+    tuning: Optional[Tuning]
+    capo: int
+    difficulty: Optional[int]
+    measures: list[dict]
+    cent_offset: int
+
+    def get_name(self) -> str:
+        return self.name or self.instrument
+
+class SongsterrSong(NamedTuple):
+    song_id: int
+    title: str
+    artist: str
+    tracks: list[SongsterrTrack]
+    yt_video_id: str
+    video_sync_times: list[float]
+
+async def search_songsterr(query: str, from_index: int=0, count: int=5) -> list[SongsterrSongSearchResult]:
+    search_url = _get_search_url(query, from_index, count)
+    search_results = await _fetch(search_url)
+    return _extract_songsterr_search_results(search_results)
+
 async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
     html_url = _get_song_url(song_id)
     html_text = await _fetch(html_url)
-    song_data = _SongData.extract(html_text)
+    song_data = _extract_song_data(html_text)
 
     video_sync_url = _get_video_sync_url(song_data.song_id, song_data.revision)
-    video_sync_datas = _VideoSyncData.extract(await _fetch(video_sync_url))
+    video_sync_datas = _extract_video_sync_data(await _fetch(video_sync_url))
 
     download_tasks = []
     for i in range(len(song_data.names)):
         track_url = _get_track_url(song_data.song_id, song_data.revision, song_data.image, i)
         download_tasks.append(_fetch(track_url))
     track_data_text = await asyncio.gather(*download_tasks)
-    track_datas = [_TrackData.extract(text) for text in track_data_text]
+    track_datas = [_extract_track_data(text) for text in track_data_text]
 
     songs = []
     for video_sync_data in video_sync_datas:
@@ -365,27 +419,32 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
         songs.append(song)
     return songs
 
-async def search_songsterr(query: str, from_index: int = 0, count: int = 10) -> list[SongsterrSongSearchResult]:
-    search_url = _get_search_url(query, from_index, count)
-    search_results = json.loads(await _fetch(search_url))
+################################################################
+# Youtube downloading
+################################################################
 
-    results = []
-    for result in search_results["records"]:
-        tracks = []
-        for track in result["tracks"]:
-            tracks.append(SongsterrTrackSearchResult(
-                name=track["name"],
-                instrument=track["instrument"],
-                tuning=Tuning([n - 40 for n in track["tuning"]]) if track.get("tuning") else None,
-                difficulty=track.get("difficulty"),
-            ))
-        results.append(SongsterrSongSearchResult(
-            title=result["title"],
-            artist=result["artist"],
-            song_id=result["songId"],
-            tracks=tracks,
-        ))
-    return results
+class YoutubeDownloadError(Exception):
+    pass
+
+class Mp3(NamedTuple):
+    data: bytes
+    duration: float
+    thumbnail: Optional[bytes]
+    preview: Optional[bytes]
+
+def has_ffmpeg() -> bool:
+    return shutil.which("ffmpeg") is not None
+
+def has_ffmpeg_rubberband_filter():
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-filters"],
+            capture_output=True,
+            text=True,
+            check=True)
+        return "rubberband" in result.stdout
+    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
+        return False
 
 async def download_youtube_mp3(video_id: str,
                                include_thumbnail: bool=False,
@@ -423,10 +482,10 @@ async def download_youtube_mp3(video_id: str,
         if retune_by_cents:
             print(f"==== BEGIN RETUNING {retune_by_cents}c ====")
             try:
-                pitch_ratio = _cents_to_pitch_ratio(retune_by_cents)
+                freq_ratio = _cents_to_freq_ratio(retune_by_cents)
                 retuned_file = os.path.join(tmp_dir, "retuned.mp3")
                 ffmpeg.input(tmp_file).output(retuned_file,
-                                              af=f"rubberband=pitch={pitch_ratio}").run(overwrite_output=True)
+                                              af=f"rubberband=pitch={freq_ratio}").run(overwrite_output=True)
                 tmp_file = retuned_file
             finally:
                 print(f"==== END RETUNING {retune_by_cents}c ====")
@@ -452,8 +511,12 @@ async def download_youtube_mp3(video_id: str,
         with open(tmp_file, 'rb') as f:
             return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
 
+################################################################
+# Feedpak generation
+################################################################
+
 def _get_arrangement_filename(track: SongsterrTrack) -> str:
-    return f"arrangements/{track.track_id} - {_to_valid_filename(track.name)}.json"
+    return f"arrangements/{track.track_id} - {_to_valid_filename(track.get_name())}.json"
 
 def _get_song_timeline_filename() -> str:
     return "song_timeline.json"
@@ -467,7 +530,10 @@ def _get_cover_filename() -> str:
 def _get_preview_filename() -> str:
     return "preview.mp3"
 
-def _iterate_measures(measures: list) -> Generator[Tuple[dict, bool], None, None]:
+def _iterate_measures(measures: list) -> Generator[tuple[dict, bool], None, None]:
+    """
+    Iterate over measures while handling repeats.
+    """
     i = 0
     wildcard = object()
     current_alternate_endings = set([wildcard])
@@ -495,18 +561,28 @@ def _iterate_measures(measures: list) -> Generator[Tuple[dict, bool], None, None
             alternate_endings = []
         i += 1
 
-def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[str, str]:
+class MeasureInfo(NamedTuple):
+    time: float
+    secs_per_semibreve: float
+    note_index: int
+    chord_index: int
+
+class SectionInfo(NamedTuple):
+    time: float
+    name: str
+    measure_index: int
+
+def build_feedpak_arrangement(track: SongsterrTrack) -> tuple[dict, dict, list[MeasureInfo], list[SectionInfo]]:
     fp_notes = []
     fp_chords = []
-    fp_anchors = []
     fp_sections = []
     fp_beats = []
+    measure_info = []
+    section_info = []
 
     DEFAULT_BPM = 100
     secs_per_semibreve = 15 / DEFAULT_BPM
     t = 0
-    anchor_min_fret = -1
-    anchor_max_fret = -1
     hopo_from = {} # Map of string -> the fret we are hopo-ing from
     slides = set() # Strings that are currently sliding
     prev_notes = {} # Map of string -> the previous note on that string
@@ -538,6 +614,11 @@ def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[
                 "number": len(fp_sections) + 1,
                 "time": t,
             })
+            section_info.append(SectionInfo(
+                time=t,
+                name=section_name,
+                measure_index=measure_num,
+            ))
 
         # Add beat lines
         fp_beats.append({
@@ -549,6 +630,13 @@ def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[
                 "time": t + (i * secs_per_semibreve / 4),
                 "measure": -1,
             })
+
+        measure_info.append(MeasureInfo(
+            time=t,
+            secs_per_semibreve=secs_per_semibreve,
+            note_index=len(fp_notes),
+            chord_index=len(fp_chords),
+        ))
 
         # Process notes
         for beat in beats:
@@ -630,20 +718,6 @@ def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[
                     "notes": simultaneous_notes,
                 })
 
-            # Update anchor if requested anchor does not fit in the current anchor
-            non_open_notes = [note for note in simultaneous_notes if note["f"]]
-            if non_open_notes:
-                req_anchor_min_fret = min(note["f"] for note in non_open_notes)
-                req_anchor_max_fret = max(note["f"] for note in non_open_notes)
-                if not (anchor_min_fret <= req_anchor_min_fret <= req_anchor_max_fret <= anchor_max_fret):
-                    anchor_min_fret = req_anchor_min_fret
-                    anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + CONFIG_ANCHOR_MIN_WIDTH - 1)
-                    fp_anchors.append({
-                        "time": t - secs_per_semibreve / 4  * CONFIG_ANCHOR_MARGIN_BEATS,
-                        "fret": anchor_min_fret,
-                        "width": anchor_max_fret - anchor_min_fret + 1,
-                    })
-
             # Update time
             t += beat["duration"][0] / beat["duration"][1] * secs_per_semibreve
 
@@ -666,36 +740,100 @@ def build_feedpak_arrangement_and_song_timeline(track: SongsterrTrack) -> Tuple[
 
     # Add default sections if there are no sections
     if not fp_sections:
-        time = 0
-        number = 1
-        while time < t:
+        for i, measure_info_item in measure_info[::CONFIG_DEFAULT_SECTION_MEASURES]:
             fp_sections.append({
                 "name": "Section",
-                "number": number,
-                "time": time,
+                "number": len(fp_sections) + 1,
+                "time": measure_info_item.time,
             })
-            time += CONFIG_DEFAULT_SECTION_SECS
-            number += 1
+            section_info.append(SectionInfo(
+                time=measure_info_item.time,
+                name="Section",
+                measure_index=i * CONFIG_DEFAULT_SECTION_MEASURES,
+            ))
 
-    arrangement = json.dumps({
-        "name": track.name,
-        "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
+    # Add an intro section if the first section does not start at time 0
+    if fp_sections[0]["time"] > 0:
+        fp_sections.insert(0, {
+            "name": "Intro",
+            "number": 0,
+            "time": 0,
+        })
+        section_info.insert(0, SectionInfo(
+            time=0,
+            name="Intro",
+            measure_index=0,
+        ))
+
+    arrangement = {
+        "name": track.get_name(),
+        "tuning": _tuning_subtract(track.tuning, Tuning.E_STD8),
         "capo": track.capo,
         "notes": fp_notes,
         "chords": fp_chords,
-        "anchors": fp_anchors,
         "handshapes": [],
         "templates": [],
-    })
-    song_timeline = json.dumps({
+    }
+    generate_feedpak_arrangement_anchors(arrangement)
+
+    song_timeline = {
         "beats": fp_beats,
         "sections": fp_sections,
-    })
-    return arrangement, song_timeline
+    }
 
-def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
+    return arrangement, song_timeline, measure_info, section_info
+
+def _iterate_notes(arrangement: dict) -> Generator[tuple[list[dict], float], None, None]:
+    """
+    Iterate over notes and chords in an arrangement in chronological order.
+    Yields a tuple of (list of notes, time).
+    """
+    note_index = 0
+    chord_index = 0
+    notes = arrangement["notes"]
+    chords = arrangement["chords"]
+    while note_index < len(notes) and chord_index < len(chords):
+        note = notes[note_index]
+        chord = chords[chord_index]
+        if note["t"] < chord["t"]:
+            yield [note], note["t"]
+            note_index += 1
+        else:
+            yield chord["notes"], chord["t"]
+            chord_index += 1
+    while note_index < len(notes):
+        yield [notes[note_index]], notes[note_index]["t"]
+        note_index += 1
+    while chord_index < len(chords):
+        yield chords[chord_index]["notes"], chords[chord_index]["t"]
+        chord_index += 1
+
+def generate_feedpak_arrangement_anchors(arrangement: dict):
+    """
+    Generate anchors for a feedpak arrangement.
+    The parameter is modified in place.
+    """
+    anchors = []
+    anchor_min_fret = -1
+    anchor_max_fret = -1
+    for note_group, t in _iterate_notes(arrangement):
+        non_open_notes = [note for note in note_group if note["f"]]
+        if non_open_notes:
+            req_anchor_min_fret = min(note["f"] for note in non_open_notes)
+            req_anchor_max_fret = max(note["f"] for note in non_open_notes)
+            if not (anchor_min_fret <= req_anchor_min_fret <= req_anchor_max_fret <= anchor_max_fret):
+                anchor_min_fret = req_anchor_min_fret
+                anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + CONFIG_ANCHOR_MIN_WIDTH - 1)
+                anchors.append({
+                    "time": t,
+                    "fret": anchor_min_fret,
+                    "width": anchor_max_fret - anchor_min_fret + 1,
+                })
+    arrangement["anchors"] = anchors
+
+def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
     manifest = {
-        "songsterr_to_feedpak_version": "0.0.0",
+        "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
         "feedpak_version": "1.0.0",
         "title": song.title,
         "artist": song.artist,
@@ -703,10 +841,10 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
         "song_timeline": _get_song_timeline_filename(),
         "arrangements": [
             {
-                "id": f"{track.track_id} - {_to_valid_filename(track.name)}",
-                "name": track.name,
+                "id": f"{track.track_id} - {_to_valid_filename(track.get_name())}",
+                "name": track.get_name(),
                 "file": _get_arrangement_filename(track),
-                "tuning": _tuning_subtract(list(reversed(track.tuning.strings)), _STANDARD_TUNING),
+                "tuning": _tuning_subtract(track.tuning, Tuning.E_STD8),
                 "capo": track.capo,
                 "centOffset": track.cent_offset,
             } for track in song.tracks
@@ -721,9 +859,13 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> str:
         manifest["cover"] = _get_cover_filename()
     if mp3.preview:
         manifest["preview"] = _get_preview_filename()
-    return yaml.dump(manifest)
+    return manifest
 
 def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
+    """
+    Build a zip file from a dictionary of files.
+    Binary files are stored without compression.
+    """
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         for filename, data in files.items():
@@ -734,15 +876,132 @@ def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
                 zip_file.writestr(filename, data)
     return zip_buffer.getvalue()
 
-def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]:
-    if any(not track.tuning for track in song.tracks):
-        raise ValueError("All tracks must have a valid tuning")
+class _ArrangementInfo:
+    def __init__(self, arrangement: dict, measure_info: list[MeasureInfo], section_info: list[SectionInfo], instrument: str):
+        self.arrangement = arrangement
+        self.measure_info = measure_info
+        self.section_info = section_info
+        self.instrument = instrument
+
+    def get_measure_note_count(self, measure_number: int) -> int:
+        if measure_number + 1 < len(self.measure_info):
+            end = self.measure_info[measure_number + 1].note_index
+        else:
+            end = len(self.arrangement["notes"])
+        return end - self.measure_info[measure_number].note_index
+
+    def get_measure_chord_count(self, measure_number: int) -> int:
+        if measure_number + 1 < len(self.measure_info):
+            end = self.measure_info[measure_number + 1].chord_index
+        else:
+            end = len(self.arrangement["chords"])
+        return end - self.measure_info[measure_number].chord_index
+
+    def get_measure_note_and_chord_count(self, measure_number: int) -> int:
+        return self.get_measure_note_count(measure_number) + self.get_measure_chord_count(measure_number)
+
+    def get_section_note_and_chord_count(self, section_number: int) -> int:
+        if section_number + 1 < len(self.section_info):
+            end = self.section_info[section_number + 1].measure_index
+        else:
+            end = len(self.measure_info)
+
+        total = 0
+        for i in range(self.section_info[section_number].measure_index, end):
+            total += self.get_measure_note_and_chord_count(i)
+        return total
+
+    def get_section_measure_count(self, section_number: int) -> int:
+        if section_number + 1 < len(self.section_info):
+            end = self.section_info[section_number + 1].measure_index
+        else:
+            end = len(self.measure_info)
+        return end - self.section_info[section_number].measure_index
+
+def build_feedpak(song: SongsterrSong, mp3: Mp3, substitute_empty_sections: bool=False) -> dict[str, Union[str, bytes]]:
     files = {}
-    files["manifest.yaml"] = build_feedpak_manifest(song, mp3)
-    for track in song.tracks:
-        arrangement, song_timeline = build_feedpak_arrangement_and_song_timeline(track)
-        files[_get_arrangement_filename(track)] = arrangement
-        files[_get_song_timeline_filename()] = song_timeline
+    manifest = build_feedpak_manifest(song, mp3)
+    files["manifest.yaml"] = yaml.dump(manifest)
+
+    arrangements = []
+    song_timeline = None
+    for i, track in enumerate(song.tracks):
+        arrangement, cur_song_timeline, measure_info, section_info = build_feedpak_arrangement(track)
+        arrangements.append(_ArrangementInfo(arrangement,
+                                             measure_info,
+                                             section_info,
+                                             Instrument.get(track.instrument, track.name)))
+        if i == 0:
+            song_timeline = cur_song_timeline
+    files[_get_song_timeline_filename()] = json.dumps(song_timeline)
+
+    if substitute_empty_sections:
+        for section_number in reversed(range(len(arrangements[0].section_info))):
+            for arrangement in arrangements:
+                # Check if the section is empty.
+                # If there are only a few notes at the start or end of the section,
+                # then we can exclude those areas and consider the rest empty.
+                # The empty section must be at least 2 * CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES long.
+                section_info = arrangement.section_info[section_number]
+                measure_count = arrangement.get_section_measure_count(section_number)
+                if measure_count < CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES:
+                    continue
+                start_has_notes = 0
+                for i in range(CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES):
+                    if arrangement.get_measure_note_and_chord_count(section_info.measure_index + i) > 0:
+                        start_has_notes = 1
+                        break
+                end_has_notes = 0
+                for i in range(CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES):
+                    if arrangement.get_measure_note_and_chord_count(section_info.measure_index + measure_count - 1 - i) > 0:
+                        end_has_notes = 1
+                        break
+                empty_measure_count = measure_count - (CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES * (start_has_notes + end_has_notes))
+                if empty_measure_count < 2 * CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES:
+                    continue
+                has_notes = False
+                for i in range(empty_measure_count):
+                    n = section_info.measure_index + (CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES * start_has_notes) + i
+                    if arrangement.get_measure_note_and_chord_count(n) > 0:
+                        has_notes = True
+                        break
+                if has_notes:
+                    continue
+
+                # Find suitable substitute arrangement
+                def create_find_active_fn(instrument: str) -> Callable[[_ArrangementInfo], bool]:
+                    return (lambda a: a.instrument == instrument
+                                  and a.arrangement["tuning"] == arrangement.arrangement["tuning"]
+                                  and a.arrangement["capo"] == arrangement.arrangement["capo"]
+                                  and a.get_section_note_and_chord_count(section_number) > 0)
+                sorted_arrangements = sorted(arrangements, key=lambda a: a.get_section_note_and_chord_count(section_number), reverse=True)
+                active = _list_find(sorted_arrangements, create_find_active_fn(arrangement.instrument))
+                if not active:
+                    if arrangement.instrument == Instrument.LEAD_GUITAR:
+                        active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.RHYTHM_GUITAR))
+                    elif arrangement.instrument == Instrument.RHYTHM_GUITAR:
+                        active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.LEAD_GUITAR))
+                if not active:
+                    continue
+
+                # Insert notes from the active arrangement
+                copy_measure_index = section_info.measure_index + (CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES * start_has_notes)
+                notes_dst_index = arrangement.measure_info[copy_measure_index].note_index
+                notes_src_index = active.measure_info[copy_measure_index].note_index
+                notes_src_count = sum(active.get_measure_note_count(copy_measure_index + i) for i in range(empty_measure_count))
+                arrangement.arrangement["notes"][notes_dst_index:notes_dst_index] = active.arrangement["notes"][notes_src_index:notes_src_index + notes_src_count]
+
+                chords_dst_index = arrangement.measure_info[copy_measure_index].chord_index
+                chords_src_index = active.measure_info[copy_measure_index].chord_index
+                chords_src_count = sum(active.get_measure_chord_count(copy_measure_index + i) for i in range(empty_measure_count))
+                arrangement.arrangement["chords"][chords_dst_index:chords_dst_index] = active.arrangement["chords"][chords_src_index:chords_src_index + chords_src_count]
+
+        for arrangement in arrangements:
+            generate_feedpak_arrangement_anchors(arrangement.arrangement)
+
+    for track, arrangement in zip(song.tracks, arrangements):
+        files[_get_arrangement_filename(track)] = json.dumps(arrangement.arrangement)
+
     files[_get_stem_filename(song)] = mp3.data
     if mp3.thumbnail:
         files[_get_cover_filename()] = mp3.thumbnail
@@ -750,29 +1009,31 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3) -> dict[str, Union[str, bytes]]
         files[_get_preview_filename()] = mp3.preview
     return files
 
-def _cents_improper_to_mixed(cents: int) -> Tuple[int, int]:
-    semitones = int(_round(cents / 100))
-    remainder_cents = cents - (semitones * 100)
-    return semitones, remainder_cents
-
-async def download_songsterr_song_to_feedpak(song_id: int,
-                                             include_thumbnail: bool=False,
-                                             include_preview: bool=False,
-                                             retune_by_cents: Optional[int]=0) -> Tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+async def download_feedpak(song_id: int,
+                           include_thumbnail: bool=False,
+                           include_preview: bool=False,
+                           retune_by_cents: Optional[int]=0,
+                           substitute_empty_sections: bool=False) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+    """
+    Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
+    Returns a dictionary of files that can be used to construct a zip file or directory.
+    Also returns the intermediate SongsterrSong and MP3 in case extra metadata is needed.
+    """
     exc = None
     songs = await download_songsterr_song(song_id)
-    for song in songs:
-        if song != songs[0]:
+    for i, song in enumerate(songs):
+        if i > 0:
             print(f"Trying next alternative youtube video")
 
-        tracks = []
-        cent_offsets = []
-        for track in song.tracks:
-            if Instrument.get(track.instrument) not in (Instrument.GUITAR, Instrument.BASS):
-                continue
-            if not track.tuning:
-                continue
+        # Keep only guitar and bass tracks
+        song = song._replace(tracks=[
+            track for track in song.tracks
+            if Instrument.is_guitar_or_bass(track.instrument, track.name) and track.tuning
+        ])
 
+        # Retune tracks
+        cent_offsets = []
+        for j, track in enumerate(song.tracks):
             cent_offsets.append(track.cent_offset)
             if retune_by_cents is None:
                 # Auto-zero out the cent offset
@@ -781,13 +1042,15 @@ async def download_songsterr_song_to_feedpak(song_id: int,
             else:
                 retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
 
-            track.tuning = track.tuning.add_semitones(retune_semitones)
-            track.cent_offset = retune_cents
-            tracks.append(track)
-        song.tracks = tracks
+            new_track = track._replace(
+                tuning=track.tuning.add_semitones(retune_semitones),
+                cent_offset=retune_cents,
+            )
+            song.tracks[j] = new_track
         if retune_by_cents is None:
             retune_by_cents = -_mode(cent_offsets)
 
+        # Download MP3
         try:
             mp3 = await download_youtube_mp3(song.yt_video_id,
                                              include_thumbnail=include_thumbnail,
@@ -795,25 +1058,17 @@ async def download_songsterr_song_to_feedpak(song_id: int,
                                              retune_by_cents=retune_by_cents)
         except YoutubeDownloadError as e:
             exc = e
-        else:
-            feedpak = build_feedpak(song, mp3)
-            return song, mp3, feedpak
+            continue
+
+        # Build feedpak
+        feedpak = build_feedpak(song, mp3, substitute_empty_sections=substitute_empty_sections)
+        return song, mp3, feedpak
 
     raise exc or ValueError("No valid tracks found for this song")
 
-def has_ffmpeg() -> bool:
-    return shutil.which("ffmpeg") is not None
-
-def has_ffmpeg_rubberband_filter():
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-filters"],
-            capture_output=True,
-            text=True,
-            check=True)
-        return "rubberband" in result.stdout
-    except (subprocess.CalledProcessError, FileNotFoundError, IndexError):
-        return False
+################################################################
+# CLI app
+################################################################
 
 async def _handle_download(args):
     print(f"==== DOWNLOAD SONG ====")
@@ -827,10 +1082,11 @@ async def _handle_download(args):
     # retune_by_cents=None means zero out the cent offset
     retune_by_cents = None if args.zero_cents else args.retune_by
 
-    song, _, feedpak = await download_songsterr_song_to_feedpak(args.download,
-                                                               include_thumbnail=args.thumbnail,
-                                                               include_preview=args.preview,
-                                                               retune_by_cents=retune_by_cents)
+    song, _, feedpak = await download_feedpak(args.download,
+                                              include_thumbnail=args.thumbnail,
+                                              include_preview=args.preview,
+                                              retune_by_cents=retune_by_cents,
+                                              substitute_empty_sections=args.substitute_empty_sections)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
@@ -869,9 +1125,9 @@ async def _handle_search(args) -> list[SongsterrSongSearchResult]:
     for result in results:
         print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
         for track in result.tracks:
-            if Instrument.get(track.instrument) in (Instrument.GUITAR, Instrument.BASS):
+            if Instrument.is_guitar_or_bass(track.instrument, track.name):
                 tuning_name = f" ({track.tuning.name})" if track.tuning else ""
-                print(f"    - {track.name}{tuning_name}")
+                print(f"    - {track.get_name()}{tuning_name}")
     return results
 
 async def main():
@@ -888,8 +1144,10 @@ async def main():
     parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")
     parser.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help="Change the audio pitch by the given number of cents (1 semitone=100 cents).")
     parser.add_argument("-z", "--zero-cents", action="store_true", help="Zero out the cent offset.")
+    parser.add_argument("-S", "--substitute-empty-sections", action="store_true", help="Substitute empty sections notes from another track.")
     args = parser.parse_args()
 
+    print(f"==== songsterr_to_feedpak v{CONFIG_SONGSTERR_TO_FEEDPAK_VERSION}====")
     if args.download:
         await _handle_download(args)
     elif args.search:

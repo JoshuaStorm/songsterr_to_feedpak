@@ -352,7 +352,6 @@ def _extract_songsterr_search_results(json_text: str) -> list[SongsterrSongSearc
     return results
 
 class SongsterrTrack(NamedTuple):
-    song: "SongsterrSong"
     track_id: int
     name: str
     instrument: str
@@ -406,7 +405,6 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
         zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
         for i, (name, instrument, track_difficulty, track_data) in enumerate(zipped):
             song.tracks.append(SongsterrTrack(
-                song=song,
                 track_id=i,
                 name=name,
                 instrument=instrument,
@@ -572,7 +570,7 @@ class SectionInfo(NamedTuple):
     name: str
     measure_index: int
 
-def build_feedpak_arrangement(track: SongsterrTrack) -> tuple[dict, dict, list[MeasureInfo], list[SectionInfo]]:
+def build_feedpak_arrangement(song: SongsterrSong, track: SongsterrTrack) -> tuple[dict, dict, list[MeasureInfo], list[SectionInfo]]:
     fp_notes = []
     fp_chords = []
     fp_sections = []
@@ -596,12 +594,12 @@ def build_feedpak_arrangement(track: SongsterrTrack) -> tuple[dict, dict, list[M
         )
 
         # Update current time
-        if measure_num < len(track.song.video_sync_times):
-            t = track.song.video_sync_times[measure_num]
+        if measure_num < len(song.video_sync_times):
+            t = song.video_sync_times[measure_num]
 
         # Calculate BPM (actually secs per semibreve since that is more natural)
-        if measure_num + 1 < len(track.song.video_sync_times):
-            next_measure_t = track.song.video_sync_times[measure_num + 1]
+        if measure_num + 1 < len(song.video_sync_times):
+            next_measure_t = song.video_sync_times[measure_num + 1]
         else:
             next_measure_t = t + (semibreves_in_measure * secs_per_semibreve)
         secs_per_semibreve = (next_measure_t - t) / semibreves_in_measure
@@ -926,7 +924,7 @@ def build_feedpak(song: SongsterrSong, mp3: Mp3, substitute_empty_sections: bool
     arrangements = []
     song_timeline = None
     for i, track in enumerate(song.tracks):
-        arrangement, cur_song_timeline, measure_info, section_info = build_feedpak_arrangement(track)
+        arrangement, cur_song_timeline, measure_info, section_info = build_feedpak_arrangement(song, track)
         arrangements.append(_ArrangementInfo(arrangement,
                                              measure_info,
                                              section_info,

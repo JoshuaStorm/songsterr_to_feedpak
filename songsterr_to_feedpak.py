@@ -1068,7 +1068,20 @@ async def download_feedpak(song_id: int,
 # CLI app
 ################################################################
 
-async def _handle_download(args):
+async def _handle_search(args) -> list[SongsterrSongSearchResult]:
+    print("==== SEARCH ====")
+    query = " ".join(args.query)
+    results = await search_songsterr(query)
+    print(f"Search results for '{query}':")
+    for result in results:
+        print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
+        for track in result.tracks:
+            if Instrument.is_guitar_or_bass(track.instrument, track.name):
+                tuning_name = f" ({track.tuning.name})" if track.tuning else ""
+                print(f"    - {track.get_name()}{tuning_name}")
+    return results
+
+async def _handle_download_by_id(args):
     print(f"==== DOWNLOAD SONG ====")
 
     # Need ffmpeg for youtube download and audio processing
@@ -1080,7 +1093,7 @@ async def _handle_download(args):
     # retune_by_cents=None means zero out the cent offset
     retune_by_cents = None if args.zero_cents else args.retune_by
 
-    song, _, feedpak = await download_feedpak(args.download,
+    song, _, feedpak = await download_feedpak(args.song_id,
                                               include_thumbnail=args.thumbnail,
                                               include_preview=args.preview,
                                               retune_by_cents=retune_by_cents,
@@ -1116,44 +1129,87 @@ async def _handle_download(args):
         with open(feedpak_dst, 'wb') as f:
             f.write(build_zip(feedpak))
 
-async def _handle_search(args) -> list[SongsterrSongSearchResult]:
-    print("==== SEARCH ====")
-    results = await search_songsterr(args.search)
-    print(f"Search results for '{args.search}':")
-    for result in results:
-        print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
-        for track in result.tracks:
-            if Instrument.is_guitar_or_bass(track.instrument, track.name):
-                tuning_name = f" ({track.tuning.name})" if track.tuning else ""
-                print(f"    - {track.get_name()}{tuning_name}")
-    return results
+async def _handle_download(args):
+    results = await _handle_search(args)
+    args.song_id = results[0].song_id
+    await _handle_download_by_id(args)
 
 async def main():
-    parser = argparse.ArgumentParser()
-    cmd_group = parser.add_mutually_exclusive_group(required=True)
-    cmd_group.add_argument("-D", "--download", metavar="SONG_ID", type=int, help="Download and create a feedpak from the given Songsterr song ID.")
-    cmd_group.add_argument("-s", "--search", metavar="QUERY", type=str, help="Search Songsterr for a song.")
-    cmd_group.add_argument("-d", "--search-and-download", metavar="QUERY", type=str, help="Search Songsterr for a song and download the first result. This is a convenience option that combines --search and --download.")
-    parser.add_argument("-o", "--output", type=str, help="The output feedpak path. If this refers to an existing folder, the feedpak will be placed in that folder. Otherwise, this will be used as the filename of the feedpak.")
-    parser.add_argument("-f", "--folder", action="store_true", help="Save feedpak as a folder instead of a single file.")
-    parser.add_argument("-a", "--artist-folder", action="store_true", help="Create a folder for the artist and place the feedpak inside it.")
-    parser.add_argument("-R", "--remove-existing", action="store_true", help="Delete the existing file or folder at the destination path before creating the feedpak.")
-    parser.add_argument("-t", "--thumbnail", action="store_true", help="Include the YouTube thumbnail as the cover image in the feedpak.")
-    parser.add_argument("-p", "--preview", action="store_true", help="Include a preview audio clip in the feedpak.")
-    parser.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help="Change the audio pitch by the given number of cents (1 semitone=100 cents).")
-    parser.add_argument("-z", "--zero-cents", action="store_true", help="Zero out the cent offset.")
-    parser.add_argument("-S", "--substitute-empty-sections", action="store_true", help="Substitute empty sections notes from another track.")
+    def add_search_args(subparser: argparse.ArgumentParser):
+        subparser.add_argument("query", nargs=argparse.ONE_OR_MORE, type=str, help="Search query.")
+
+    def add_download_args(subparser: argparse.ArgumentParser):
+        subparser.add_argument("-o", "--output", type=str, metavar="PATH", help=
+                               "The output feedpak path.\n"
+                               "If this refers to an existing folder, the feedpak will be placed in that folder.\n"
+                               "Otherwise, this will be used as the filename of the feedpak.\n\n")
+
+        subparser.add_argument("-a", "--artist-folder", action="store_true", help=
+                               "Create a folder for the artist and place the feedpak inside it.\n"
+                               "This option is recommended to keep your files organised.\n\n")
+
+        subparser.add_argument("-s", "--substitute-empty-sections", action="store_true", help=
+                               "Substitute empty sections with notes from another track.\n"
+                               "This option is recommended because many Songsterr tracks have sections\n"
+                               "with no notes once the instrument or effect is changed. To fill in these\n"
+                               "sections, notes from another track with the same tuning and capo are used.\n"
+                               "The most similar track is chosen (catagorised by rhythm, lead, bass)\n\n")
+
+        subparser.add_argument("-t", "--thumbnail", action="store_true", help=
+                               "Include the YouTube thumbnail as the cover image in the feedpak.\n"
+                               "Note that FeedBack already has a built-in option to fetch a thumbnail\n"
+                               "which will likely give better results than this option.\n\n")
+
+        subparser.add_argument("-p", "--preview", action="store_true", help=
+                               "Include a preview audio clip in the feedpak.\n"
+                               "Note that FeedBack already has a built-in option to generate a preview\n"
+                               "which will likely give better results than this option.\n\n")
+
+        retune_group = subparser.add_mutually_exclusive_group()
+        retune_group.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help=
+                                  "Change the audio pitch by the given number of cents (1 semitone=100 cents).\n\n")
+
+        retune_group.add_argument("-z", "--zero-cents", action="store_true", help=
+                                  "Zero out the cent offset i.e. retune to A440.\n\n")
+
+        subparser.add_argument("-f", "--folder", action="store_true", help=
+                               "Save the feedpak as a folder instead of a single file.\n"
+                               "This is useful for development and testing purposes.\n\n")
+
+        subparser.add_argument("-R", "--remove-existing", action="store_true", help=
+                               "Delete the existing file or folder at the destination path before creating the feedpak.\n"
+                               "When writing a file (no -f) to a location where a file already exists, the existing file\n"
+                               "will be overwritten even without this option. This option is intended for switching between\n"
+                               "the file and folder formats and for cleaning out old folders.\n\n")
+
+    parser = argparse.ArgumentParser(
+        description="Songsterr to Feedpak Converter",
+        formatter_class=argparse.RawTextHelpFormatter)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    parser_search = subparsers.add_parser("search", formatter_class=argparse.RawTextHelpFormatter, help=
+                                          "Search Songsterr and print the song information of the search results.\n\n")
+    add_search_args(parser_search)
+
+    parser_download = subparsers.add_parser("download-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
+                                            "Download and create a feedpak from a Songsterr song ID.\n\n")
+    parser_download.add_argument("song_id", type=int, help="Songsterr song ID.")
+    add_download_args(parser_download)
+
+    parser_search_and_download = subparsers.add_parser("download", formatter_class=argparse.RawTextHelpFormatter, help=
+                                                       "Search Songsterr, and download and create a feedpak from the first result.\n"
+                                                       "This is a convenience command that combines the search and download-by-id commands.\n")
+    add_search_args(parser_search_and_download)
+    add_download_args(parser_search_and_download)
+
     args = parser.parse_args()
 
     print(f"==== songsterr_to_feedpak v{CONFIG_SONGSTERR_TO_FEEDPAK_VERSION}====")
-    if args.download:
-        await _handle_download(args)
-    elif args.search:
+    if args.command == "search":
         await _handle_search(args)
-    elif args.search_and_download:
-        args.search = args.search_and_download
-        results = await _handle_search(args)
-        args.download = results[0].song_id
+    elif args.command == "download-by-id":
+        await _handle_download_by_id(args)
+    elif args.command == "download":
         await _handle_download(args)
     print("==== DONE ====")
 

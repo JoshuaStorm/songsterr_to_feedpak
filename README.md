@@ -25,23 +25,25 @@ winget install -e --id Gyan.FFmpeg
 
 # Usage
 
-## Download by song ID
-
-```sh
-# Download from https://www.songsterr.com/a/wsa/metallica-master-of-puppets-tab-s455118
-python3 songsterr_to_feedpak.py -D 455118
-```
-
 ## Search Songsterr
 
 ```sh
-# Search for master of puppets
-python3 songsterr_to_feedpak.py -s "master of puppets"
+# Search for master of puppets.
+python3 songsterr_to_feedpak.py search "master of puppets"
+```
+
+## Download by song ID
+
+```sh
+# Download from https://www.songsterr.com/a/wsa/metallica-master-of-puppets-tab-s455118.
+# Recommend adding --artist-folder and --substitute-empty-sections options.
+python3 songsterr_to_feedpak.py download-by-id 455118
 ```
 
 ## Search Songsterr and download first result
 
 ```sh
-# Search and download master of puppets
-python3 songsterr_to_feedpak.py -d "master of puppets"
+# Search and download master of puppets.
+# Recommend adding --artist-folder and --substitute-empty-sections options.
+python3 songsterr_to_feedpak.py download "master of puppets"
 ```

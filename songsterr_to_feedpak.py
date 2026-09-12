@@ -259,36 +259,47 @@ def _extract_track_data(json_text: str) -> _TrackData:
 
 class _VideoSyncData(NamedTuple):
     video_id: str
+    video_type: str
     measure_times: list[float]
 
+class VideoType:
+    MAIN = "main"
+    MAIN_ALT = "alternative"
+    BACKING = "backing"
+    SOLO = "solo"
+    PLAYTHROUGH = "playthrough"
+
 def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
-    def get_video_type(video: dict) -> str:
-        types = [
-            "alternative",
-            "backing",
-            "solo",
-            "playthrough",
-        ]
-        feature = video.get("feature")
-        return feature if feature in types else None
-
-    def cmp_video(lhs: dict, rhs: dict) -> int:
-        lhs_is_special_type = get_video_type(lhs) not in (None, "alternative")
-        rhs_is_special_type = get_video_type(rhs) not in (None, "alternative")
-        if lhs_is_special_type != rhs_is_special_type:
-            return int(lhs_is_special_type) - int(rhs_is_special_type)
-        return lhs["_index"] - rhs["_index"]
-
     videos = json.loads(json_text)
     if videos is None:
         return []
-    for i, video in enumerate(videos):
-        video["_index"] = i
 
-    return [_VideoSyncData(
+    def get_video_type(video: dict) -> str:
+        feature = video.get("feature")
+        if feature == "alternative":
+            return VideoType.MAIN_ALT
+        elif feature == "backing":
+            return VideoType.BACKING
+        elif feature == "solo":
+            return VideoType.SOLO
+        elif feature == "playthrough":
+            return VideoType.PLAYTHROUGH
+        return VideoType.MAIN
+
+    video_sync_data = [_VideoSyncData(
         video_id=video["videoId"],
+        video_type=get_video_type(video),
         measure_times=video["points"],
-    ) for video in sorted(videos, key=functools.cmp_to_key(cmp_video))]
+    ) for video in videos]
+
+    order = [
+        VideoType.MAIN,
+        VideoType.MAIN_ALT,
+        VideoType.BACKING,
+        VideoType.SOLO,
+        VideoType.PLAYTHROUGH,
+    ]
+    return sorted(video_sync_data, key=lambda v: order.index(v.video_type))
 
 class Instrument:
     VOCALS = "vocals"
@@ -372,6 +383,7 @@ class SongsterrSong(NamedTuple):
     artist: str
     tracks: list[SongsterrTrack]
     yt_video_id: str
+    yt_video_type: str
     video_sync_times: list[float]
 
 async def search_songsterr(query: str, from_index: int=0, count: int=5) -> list[SongsterrSongSearchResult]:
@@ -402,6 +414,7 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
             artist=song_data.artist,
             tracks=[],
             yt_video_id=video_sync_data.video_id,
+            yt_video_type=video_sync_data.video_type,
             video_sync_times=video_sync_data.measure_times,
         )
         zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
@@ -1018,6 +1031,7 @@ async def download_feedpak(song_id: int,
                            include_preview: bool=False,
                            retune_by_cents: Optional[int]=0,
                            substitute_empty_sections: bool=False,
+                           video_type: str=VideoType.MAIN,
                            manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
     Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
@@ -1026,9 +1040,17 @@ async def download_feedpak(song_id: int,
     """
     exc = None
     songs = await download_songsterr_song(song_id)
-    for i, song in enumerate(songs):
-        if i > 0:
-            print(f"Trying next alternative youtube video")
+    first_attempt = True
+    for song in songs:
+        if song.yt_video_type == VideoType.MAIN and video_type == VideoType.MAIN_ALT:
+            # Allow alternative even if main was requested
+            pass
+        elif song.yt_video_type != video_type:
+            continue
+        
+        if not first_attempt:
+            print(f"Trying next youtube video")
+        first_attempt = False
 
         # Keep only guitar and bass tracks
         song = song._replace(tracks=[
@@ -1103,6 +1125,14 @@ async def _handle_download_by_id(args: argparse.Namespace):
     # retune_by_cents=None means zero out the cent offset
     retune_by_cents = None if args.zero_cents else args.retune_by
 
+    video_type = VideoType.MAIN
+    if args.video_type == "backing":
+        video_type = VideoType.BACKING
+    elif args.video_type == "solo":
+        video_type = VideoType.SOLO
+    elif args.video_type == "playthrough":
+        video_type = VideoType.PLAYTHROUGH
+
     # Add custom metadata for debugging and tracing purposes
     cmdline = dict(vars(args))
     del cmdline["output"]
@@ -1119,6 +1149,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
                                               include_preview=args.preview,
                                               retune_by_cents=retune_by_cents,
                                               substitute_empty_sections=args.substitute_empty_sections,
+                                              video_type=video_type,
                                               manifest_extra=manifest_extra)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
@@ -1193,6 +1224,10 @@ async def main():
 
         retune_group.add_argument("-z", "--zero-cents", action="store_true", help=
                                   "Zero out the cent offset i.e. retune to A440.\n\n")
+
+        video_types = ["main", "backing", "solo", "playthrough"]
+        subparser.add_argument("-V", "--video-type", choices=video_types, default="main", help=
+                               "Type of YouTube video to download (default: main).\n\n")
 
         subparser.add_argument("-f", "--folder", action="store_true", help=
                                "Save the feedpak as a folder instead of a single file.\n"

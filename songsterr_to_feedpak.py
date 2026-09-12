@@ -280,6 +280,8 @@ def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
         return lhs["_index"] - rhs["_index"]
 
     videos = json.loads(json_text)
+    if videos is None:
+        return []
     for i, video in enumerate(videos):
         video["_index"] = i
 

@@ -1185,6 +1185,7 @@ async def main():
     parser = argparse.ArgumentParser(
         description="Songsterr to Feedpak Converter",
         formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s v{CONFIG_SONGSTERR_TO_FEEDPAK_VERSION}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     parser_search = subparsers.add_parser("search", formatter_class=argparse.RawTextHelpFormatter, help=

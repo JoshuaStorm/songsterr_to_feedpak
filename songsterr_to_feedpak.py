@@ -1,26 +1,26 @@
 # Copyright (c) 2026 Kevin Lu
 
-from typing import Callable, Generator, Optional, Union
-from typing import NamedTuple
+from typing import Callable, Generator, Optional, Union, NamedTuple
+import argparse
+import asyncio
 import functools
+import io
+import json
 import math
 import os
-import tempfile
-import json
-import io
-import zipfile
-import asyncio
-import argparse
-import shutil
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
+import zipfile
 
 # External dependencies
-import yaml
 import bs4
-import httpx
-import yt_dlp
 import ffmpeg
+import httpx
+import yaml
+import yt_dlp
 
 # songsterr_to_feedpak version number to be embedded in the feedpak manifest
 CONFIG_SONGSTERR_TO_FEEDPAK_VERSION = "0.0.0"
@@ -831,7 +831,6 @@ def generate_feedpak_arrangement_anchors(arrangement: dict):
 
 def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
     manifest = {
-        "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
         "feedpak_version": "1.0.0",
         "title": song.title,
         "artist": song.artist,
@@ -916,9 +915,14 @@ class _ArrangementInfo:
             end = len(self.measure_info)
         return end - self.section_info[section_number].measure_index
 
-def build_feedpak(song: SongsterrSong, mp3: Mp3, substitute_empty_sections: bool=False) -> dict[str, Union[str, bytes]]:
+def build_feedpak(song: SongsterrSong,
+                  mp3: Mp3,
+                  substitute_empty_sections: bool=False,
+                  manifest_extra: Optional[dict[str, object]]=None) -> dict[str, Union[str, bytes]]:
     files = {}
     manifest = build_feedpak_manifest(song, mp3)
+    if manifest_extra:
+        manifest.update(manifest_extra)
     files["manifest.yaml"] = yaml.dump(manifest)
 
     arrangements = []
@@ -1011,7 +1015,8 @@ async def download_feedpak(song_id: int,
                            include_thumbnail: bool=False,
                            include_preview: bool=False,
                            retune_by_cents: Optional[int]=0,
-                           substitute_empty_sections: bool=False) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+                           substitute_empty_sections: bool=False,
+                           manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
     Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
     Returns a dictionary of files that can be used to construct a zip file or directory.
@@ -1059,7 +1064,10 @@ async def download_feedpak(song_id: int,
             continue
 
         # Build feedpak
-        feedpak = build_feedpak(song, mp3, substitute_empty_sections=substitute_empty_sections)
+        feedpak = build_feedpak(song,
+                                mp3,
+                                substitute_empty_sections=substitute_empty_sections,
+                                manifest_extra=manifest_extra)
         return song, mp3, feedpak
 
     raise exc or ValueError("No valid tracks found for this song")
@@ -1068,7 +1076,7 @@ async def download_feedpak(song_id: int,
 # CLI app
 ################################################################
 
-async def _handle_search(args) -> list[SongsterrSongSearchResult]:
+async def _handle_search(args: argparse.Namespace) -> list[SongsterrSongSearchResult]:
     print("==== SEARCH ====")
     query = " ".join(args.query)
     results = await search_songsterr(query)
@@ -1081,7 +1089,7 @@ async def _handle_search(args) -> list[SongsterrSongSearchResult]:
                 print(f"    - {track.get_name()}{tuning_name}")
     return results
 
-async def _handle_download_by_id(args):
+async def _handle_download_by_id(args: argparse.Namespace):
     print(f"==== DOWNLOAD SONG ====")
 
     # Need ffmpeg for youtube download and audio processing
@@ -1093,11 +1101,23 @@ async def _handle_download_by_id(args):
     # retune_by_cents=None means zero out the cent offset
     retune_by_cents = None if args.zero_cents else args.retune_by
 
+    # Add custom metadata for debugging and tracing purposes
+    cmdline = dict(vars(args))
+    del cmdline["output"]
+    del cmdline["artist_folder"]
+    del cmdline["remove_existing"]
+    manifest_extra = {
+        "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
+        "songsterr_to_feedpak_song_id": args.song_id,
+        "songsterr_to_feedpak_cmdline": cmdline,
+    }
+
     song, _, feedpak = await download_feedpak(args.song_id,
                                               include_thumbnail=args.thumbnail,
                                               include_preview=args.preview,
                                               retune_by_cents=retune_by_cents,
-                                              substitute_empty_sections=args.substitute_empty_sections)
+                                              substitute_empty_sections=args.substitute_empty_sections,
+                                              manifest_extra=manifest_extra)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
@@ -1129,7 +1149,7 @@ async def _handle_download_by_id(args):
         with open(feedpak_dst, 'wb') as f:
             f.write(build_zip(feedpak))
 
-async def _handle_download(args):
+async def _handle_download(args: argparse.Namespace):
     results = await _handle_search(args)
     args.song_id = results[0].song_id
     await _handle_download_by_id(args)

@@ -738,7 +738,7 @@ def build_feedpak_arrangement(song: SongsterrSong, track: SongsterrTrack) -> tup
 
     # Add default sections if there are no sections
     if not fp_sections:
-        for i, measure_info_item in measure_info[::CONFIG_DEFAULT_SECTION_MEASURES]:
+        for i, measure_info_item in list(enumerate(measure_info))[::CONFIG_DEFAULT_SECTION_MEASURES]:
             fp_sections.append({
                 "name": "Section",
                 "number": len(fp_sections) + 1,
@@ -747,7 +747,7 @@ def build_feedpak_arrangement(song: SongsterrSong, track: SongsterrTrack) -> tup
             section_info.append(SectionInfo(
                 time=measure_info_item.time,
                 name="Section",
-                measure_index=i * CONFIG_DEFAULT_SECTION_MEASURES,
+                measure_index=i,
             ))
 
     # Add an intro section if the first section does not start at time 0

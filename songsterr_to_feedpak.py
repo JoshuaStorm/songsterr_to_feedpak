@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Kevin Lu
 
-from typing import Callable, Generator, Optional, Union, NamedTuple
+import traceback
+from typing import Awaitable, Callable, Generator, Optional, Union, NamedTuple
 import argparse
 import asyncio
-import functools
+import copy
 import io
 import json
 import math
@@ -11,7 +12,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import zipfile
 
@@ -463,66 +463,67 @@ async def download_youtube_mp3(video_id: str,
                                include_thumbnail: bool=False,
                                include_preview: bool=False,
                                retune_by_cents: int=0) -> Mp3:
-    # TODO: make async
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_file =  os.path.join(tmp_dir, video_id)
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '0',
-            }],
-            'outtmpl': tmp_file,
-        }
-        tmp_file += '.mp3'
+    def work():
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_file =  os.path.join(tmp_dir, video_id)
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '0',
+                }],
+                'outtmpl': tmp_file,
+            }
+            tmp_file += '.mp3'
 
-        print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                if include_thumbnail:
-                    info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
-                    thumbnail_url = info.get('thumbnail')
-                    thumbnail = await _fetch_bytes(thumbnail_url) if thumbnail_url else None
-                else:
-                    ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-                    thumbnail = None
-        except Exception as e:
-            raise YoutubeDownloadError(f"Failed to download YouTube video {video_id}: {e}") from e
-        finally:
-            print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
-
-        if retune_by_cents:
-            print(f"==== BEGIN RETUNING {retune_by_cents}c ====")
+            print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
             try:
-                freq_ratio = _cents_to_freq_ratio(retune_by_cents)
-                retuned_file = os.path.join(tmp_dir, "retuned.mp3")
-                ffmpeg.input(tmp_file).output(retuned_file,
-                                              af=f"rubberband=pitch={freq_ratio}").run(overwrite_output=True)
-                tmp_file = retuned_file
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    if include_thumbnail:
+                        info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+                        thumbnail_url = info.get('thumbnail')
+                        thumbnail = asyncio.run(_fetch_bytes(thumbnail_url) if thumbnail_url else None)
+                    else:
+                        ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+                        thumbnail = None
+            except Exception as e:
+                raise YoutubeDownloadError(f"Failed to download YouTube video {video_id}: {e}") from e
             finally:
-                print(f"==== END RETUNING {retune_by_cents}c ====")
+                print(f"==== END YOUTUBE DOWNLOAD {video_id} ====")
 
-        duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
+            if retune_by_cents:
+                print(f"==== BEGIN RETUNING {retune_by_cents}c ====")
+                try:
+                    freq_ratio = _cents_to_freq_ratio(retune_by_cents)
+                    retuned_file = os.path.join(tmp_dir, "retuned.mp3")
+                    ffmpeg.input(tmp_file).output(retuned_file,
+                                                af=f"rubberband=pitch={freq_ratio}").run(overwrite_output=True)
+                    tmp_file = retuned_file
+                finally:
+                    print(f"==== END RETUNING {retune_by_cents}c ====")
 
-        if include_preview:
-            print(f"==== BEGIN PREVIEW GENERATION ====")
-            try:
-                preview_file = os.path.join(tmp_dir, "preview.mp3")
-                preview_start = max(min(duration / 2, duration - CONFIG_PREVIEW_SECS), 0)
-                preview_duration = min(CONFIG_PREVIEW_SECS, duration)
-                ffmpeg.input(tmp_file).output(preview_file,
-                                              ss=preview_start,
-                                              t=preview_duration).run(overwrite_output=True)
-                with open(preview_file, 'rb') as f:
-                    preview = f.read()
-            finally:
-                print(f"==== END PREVIEW GENERATION ====")
-        else:
-            preview = None
+            duration = float(ffmpeg.probe(tmp_file)['format']['duration'])
 
-        with open(tmp_file, 'rb') as f:
-            return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
+            if include_preview:
+                print(f"==== BEGIN PREVIEW GENERATION ====")
+                try:
+                    preview_file = os.path.join(tmp_dir, "preview.mp3")
+                    preview_start = max(min(duration / 2, duration - CONFIG_PREVIEW_SECS), 0)
+                    preview_duration = min(CONFIG_PREVIEW_SECS, duration)
+                    ffmpeg.input(tmp_file).output(preview_file,
+                                                ss=preview_start,
+                                                t=preview_duration).run(overwrite_output=True)
+                    with open(preview_file, 'rb') as f:
+                        preview = f.read()
+                finally:
+                    print(f"==== END PREVIEW GENERATION ====")
+            else:
+                preview = None
+
+            with open(tmp_file, 'rb') as f:
+                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
+    return await asyncio.to_thread(work)
 
 ################################################################
 # Feedpak generation
@@ -1088,7 +1089,8 @@ async def download_feedpak(song_id: int,
                                              include_preview=include_preview,
                                              retune_by_cents=retune_by_cents)
         except YoutubeDownloadError as e:
-            exc = e
+            if not exc:
+                exc = e
             continue
 
         # Build feedpak
@@ -1105,8 +1107,8 @@ async def download_feedpak(song_id: int,
 ################################################################
 
 async def _handle_search(args: argparse.Namespace) -> list[SongsterrSongSearchResult]:
-    print("==== SEARCH ====")
     query = " ".join(args.query)
+    print(f"==== SEARCH {query} ====")
     results = await search_songsterr(query)
     print(f"Search results for '{query}':")
     for result in results:
@@ -1118,7 +1120,7 @@ async def _handle_search(args: argparse.Namespace) -> list[SongsterrSongSearchRe
     return results
 
 async def _handle_download_by_id(args: argparse.Namespace):
-    print(f"==== DOWNLOAD SONG ====")
+    print(f"==== DOWNLOAD SONG {args.song_id} ====")
 
     # Need ffmpeg for youtube download and audio processing
     if not has_ffmpeg():
@@ -1139,9 +1141,11 @@ async def _handle_download_by_id(args: argparse.Namespace):
 
     # Add custom metadata for debugging and tracing purposes
     cmdline = dict(vars(args))
-    del cmdline["output"]
-    del cmdline["artist_folder"]
-    del cmdline["remove_existing"]
+    cmdline.pop("output", None)
+    cmdline.pop("artist_folder", None)
+    cmdline.pop("remove_existing", None)
+    cmdline.pop("input_file", None)
+    cmdline.pop("worker_count", None)
     manifest_extra = {
         "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
         "songsterr_to_feedpak_song_id": args.song_id,
@@ -1191,6 +1195,48 @@ async def _handle_download(args: argparse.Namespace):
     results = await _handle_search(args)
     args.song_id = results[0].song_id
     await _handle_download_by_id(args)
+
+async def _run_parallel_download(work: tuple[list[Callable[[], Awaitable[None]]], str],
+                                 worker_count: int) -> list:
+    """
+    Execute a list of async work while limiting the number of concurrent workers.
+    Takes a list of tuples of (async function factory, name) and a worker count.
+    The async function factory, when called, returns an awaitable.
+    """
+    semaphore = asyncio.Semaphore(worker_count)
+
+    async def do_work(fn: Callable[[], object], name: str):
+        async with semaphore:
+            try:
+                await fn()
+            except Exception as e:
+                print(f"{name} failed: {e}")
+                traceback.print_exc()
+
+    tasks = [asyncio.create_task(do_work(w[0], w[1])) for w in work]
+    await asyncio.gather(*tasks)
+
+async def _handle_download_list_by_id(args: argparse.Namespace):
+    with open(args.input_file, 'r') as f:
+        song_ids = [int(line.strip()) for line in f if line.strip()]
+
+    work = []
+    for song_id in song_ids:
+        args_copy = copy.deepcopy(args)
+        args_copy.song_id = song_id
+        work.append((lambda a=args_copy: _handle_download_by_id(a), f"Download {song_id}"))
+    await _run_parallel_download(work, args.worker_count)
+
+async def _handle_download_list(args: argparse.Namespace):
+    with open(args.input_file, 'r') as f:
+        queries = [line.strip() for line in f if line.strip()]
+
+    work = []
+    for query in queries:
+        args_copy = copy.deepcopy(args)
+        args_copy.query = [query]
+        work.append((lambda a=args_copy: _handle_download(a), f"Download {query}"))
+    await _run_parallel_download(work, args.worker_count)
 
 async def main():
     def add_search_args(subparser: argparse.ArgumentParser):
@@ -1247,6 +1293,10 @@ async def main():
                                "will be overwritten even without this option. This option is intended for switching between\n"
                                "the file and folder formats and for cleaning out old folders.\n\n")
 
+    def add_download_list_args(subparser: argparse.ArgumentParser):
+        subparser.add_argument("-w", "--worker-count", type=int, default=10, help=
+                               "The number of parallel workers to use for downloading (default: 10).\n\n")
+
     parser = argparse.ArgumentParser(
         description="Songsterr to Feedpak Converter",
         formatter_class=argparse.RawTextHelpFormatter)
@@ -1257,16 +1307,30 @@ async def main():
                                           "Search Songsterr and print the song information of the search results.\n\n")
     add_search_args(parser_search)
 
-    parser_download = subparsers.add_parser("download-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
-                                            "Download and create a feedpak from a Songsterr song ID.\n\n")
-    parser_download.add_argument("song_id", type=int, help="Songsterr song ID.")
+    parser_download_by_id = subparsers.add_parser("download-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
+                                                  "Download and create a feedpak from a Songsterr song ID.\n\n")
+    parser_download_by_id.add_argument("song_id", type=int, help="Songsterr song ID.")
+    add_download_args(parser_download_by_id)
+
+    parser_download = subparsers.add_parser("download", formatter_class=argparse.RawTextHelpFormatter, help=
+                                            "Search Songsterr, and download and create a feedpak from the first result.\n"
+                                            "This is a convenience command that combines the search and download-by-id commands.\n\n")
+    add_search_args(parser_download)
     add_download_args(parser_download)
 
-    parser_search_and_download = subparsers.add_parser("download", formatter_class=argparse.RawTextHelpFormatter, help=
-                                                       "Search Songsterr, and download and create a feedpak from the first result.\n"
-                                                       "This is a convenience command that combines the search and download-by-id commands.\n")
-    add_search_args(parser_search_and_download)
-    add_download_args(parser_search_and_download)
+    parser_download_list_by_id = subparsers.add_parser("download-list-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
+                                                       "Download and create feedpaks for all the songs specified in a text file.\n"
+                                                       "The text file should contain one song ID per line.\n\n")
+    parser_download_list_by_id.add_argument("input_file", type=str, help="Path to the text file containing song IDs.")
+    add_download_list_args(parser_download_list_by_id)
+    add_download_args(parser_download_list_by_id)
+
+    parser_download_list = subparsers.add_parser("download-list", formatter_class=argparse.RawTextHelpFormatter, help=
+                                                 "Search Songsterr, and download and create feedpaks for all the songs specified in a text file.\n"
+                                                 "The text file should contain one search query per line.\n")
+    parser_download_list.add_argument("input_file", type=str, help="Path to the text file containing search queries.")
+    add_download_list_args(parser_download_list)
+    add_download_args(parser_download_list)
 
     args = parser.parse_args()
 
@@ -1277,6 +1341,10 @@ async def main():
         await _handle_download_by_id(args)
     elif args.command == "download":
         await _handle_download(args)
+    elif args.command == "download-list-by-id":
+        await _handle_download_list_by_id(args)
+    elif args.command == "download-list":
+        await _handle_download_list(args)
     print("==== DONE ====")
 
 if __name__ == "__main__":

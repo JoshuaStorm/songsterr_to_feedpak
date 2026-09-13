@@ -47,3 +47,13 @@ python3 songsterr_to_feedpak.py download-by-id 455118
 # Recommend adding --artist-folder and --substitute-empty-sections options.
 python3 songsterr_to_feedpak.py download "master of puppets"
 ```
+
+# Troubleshooting
+
+If you run into any problems not covered here, raise an issue.
+
+## Audio is not synchronised with the notes
+
+First, check if the synchronisation issue also exists on the Songsterr website.
+If it does, it is an issue on the Songsterr end, not this program.
+To fix it, you should report the issue to the Songsterr team.

@@ -161,7 +161,7 @@ class Tuning:
         deltas = [strings[i + 1] - strings[i] for i in range(len(strings) - 1)]
         for shape in _TuningShape.COMMON_SHAPES:
             if deltas == shape.deltas:
-                shape = shape
+                # Carry over the value stored in shape to be used out of the loop
                 break
         else:
             shape = _TuningShape(deltas,
@@ -1049,7 +1049,7 @@ async def download_feedpak(song_id: int,
             pass
         elif song.yt_video_type != video_type:
             continue
-        
+
         if not first_attempt:
             print(f"Trying next youtube video")
         first_attempt = False

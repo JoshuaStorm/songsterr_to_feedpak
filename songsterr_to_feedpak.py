@@ -218,6 +218,7 @@ class _SongData(NamedTuple):
     names: list[str]
     instruments: list[str]
     track_difficulties: list[Optional[int]]
+    track_hashes: list[str]
     tags: list[str]
     artist: str
     title: str
@@ -233,6 +234,7 @@ def _extract_song_data(html_text: str) -> _SongData:
         names=[t["name"] for t in data["tracks"]],
         instruments=[t["instrument"] for t in data["tracks"]],
         track_difficulties=[t.get("difficulty") for t in data["tracks"]],
+        track_hashes=[t["hash"] for t in data["tracks"]],
         tags=data["tags"],
         artist=data["artist"],
         title=data["title"],
@@ -260,6 +262,7 @@ def _extract_track_data(json_text: str) -> _TrackData:
 class _VideoSyncData(NamedTuple):
     video_id: str
     video_type: str
+    compatible_track_hashes: list[str]
     measure_times: list[float]
 
 class VideoType:
@@ -289,6 +292,7 @@ def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
     video_sync_data = [_VideoSyncData(
         video_id=video["videoId"],
         video_type=get_video_type(video),
+        compatible_track_hashes=video["trackHashes"],
         measure_times=video["points"],
     ) for video in videos]
 
@@ -371,6 +375,7 @@ class SongsterrTrack(NamedTuple):
     tuning: Optional[Tuning]
     capo: int
     difficulty: Optional[int]
+    track_hash: str
     measures: list[dict]
     cent_offset: int
 
@@ -384,6 +389,7 @@ class SongsterrSong(NamedTuple):
     tracks: list[SongsterrTrack]
     yt_video_id: str
     yt_video_type: str
+    compatible_track_hashes: list[str]
     video_sync_times: list[float]
 
 async def search_songsterr(query: str, from_index: int=0, count: int=5) -> list[SongsterrSongSearchResult]:
@@ -415,16 +421,22 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
             tracks=[],
             yt_video_id=video_sync_data.video_id,
             yt_video_type=video_sync_data.video_type,
+            compatible_track_hashes=video_sync_data.compatible_track_hashes,
             video_sync_times=video_sync_data.measure_times,
         )
-        zipped = zip(song_data.names, song_data.instruments, song_data.track_difficulties, track_datas)
-        for i, (name, instrument, track_difficulty, track_data) in enumerate(zipped):
+        zipped = zip(song_data.names,
+                     song_data.instruments,
+                     song_data.track_difficulties,
+                     song_data.track_hashes,
+                     track_datas)
+        for i, (name, instrument, track_difficulty, track_hash, track_data) in enumerate(zipped):
             song.tracks.append(SongsterrTrack(
                 track_id=i,
                 name=name,
                 instrument=instrument,
                 tuning=track_data.tuning,
                 difficulty=track_difficulty,
+                track_hash=track_hash,
                 capo=track_data.capo,
                 measures=track_data.measures,
                 cent_offset=_note_a_freq_to_cent_offset(track_data.note_a_freq),
@@ -1033,6 +1045,7 @@ async def download_feedpak(song_id: int,
                            retune_by_cents: Optional[int]=0,
                            substitute_empty_sections: bool=False,
                            video_type: str=VideoType.MAIN,
+                           track_index_for_video_type: int=0,
                            title_override: Optional[str]=None,
                            manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
@@ -1044,10 +1057,11 @@ async def download_feedpak(song_id: int,
     songs = await download_songsterr_song(song_id)
     first_attempt = True
     for song in songs:
-        if video_type == VideoType.MAIN and song.yt_video_type == VideoType.MAIN_ALT:
-            # Allow alternative even if main was requested
+        if (video_type == VideoType.MAIN and song.yt_video_type in (VideoType.MAIN, VideoType.MAIN_ALT)):
             pass
-        elif song.yt_video_type != video_type:
+        elif track_index_for_video_type >= len(song.tracks):
+            continue
+        elif video_type != song.yt_video_type or song.tracks[track_index_for_video_type].track_hash not in song.compatible_track_hashes:
             continue
 
         if not first_attempt:
@@ -1131,6 +1145,11 @@ async def _handle_download_by_id(args: argparse.Namespace):
     # retune_by_cents=None means zero out the cent offset
     retune_by_cents = None if args.zero_cents else args.retune_by
 
+    if args.video_type != "main" and args.track_index is None:
+        raise ValueError("Must specify --track-index when using --video-type other than 'main'")
+    elif args.video_type == "main" and args.track_index is not None:
+        raise ValueError("Cannot specify --track-index when using --video-type 'main'")
+
     video_type = VideoType.MAIN
     if args.video_type == "backing":
         video_type = VideoType.BACKING
@@ -1148,7 +1167,6 @@ async def _handle_download_by_id(args: argparse.Namespace):
     cmdline.pop("worker_count", None)
     manifest_extra = {
         "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
-        "songsterr_to_feedpak_song_id": args.song_id,
         "songsterr_to_feedpak_cmdline": cmdline,
     }
 
@@ -1158,6 +1176,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
                                               retune_by_cents=retune_by_cents,
                                               substitute_empty_sections=args.substitute_empty_sections,
                                               video_type=video_type,
+                                              track_index_for_video_type=args.track_index or 0,
                                               title_override=args.title,
                                               manifest_extra=manifest_extra)
 
@@ -1242,7 +1261,7 @@ async def main():
     def add_search_args(subparser: argparse.ArgumentParser):
         subparser.add_argument("query", nargs=argparse.ONE_OR_MORE, type=str, help="Search query.")
 
-    def add_download_args(subparser: argparse.ArgumentParser):
+    def add_download_args(subparser: argparse.ArgumentParser, multidownload: bool):
         subparser.add_argument("-o", "--output", type=str, metavar="PATH", help=
                                "The output feedpak path.\n"
                                "If this refers to an existing folder, the feedpak will be placed in that folder.\n"
@@ -1269,9 +1288,6 @@ async def main():
                                "Note that FeedBack already has a built-in option to generate a preview\n"
                                "which will likely give better results than this option.\n\n")
 
-        subparser.add_argument("-T", "--title", type=str, help=
-                               "Override the song title.\n\n")
-
         retune_group = subparser.add_mutually_exclusive_group()
         retune_group.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help=
                                   "Change the audio pitch by the given number of cents (1 semitone=100 cents).\n\n")
@@ -1279,9 +1295,25 @@ async def main():
         retune_group.add_argument("-z", "--zero-cents", action="store_true", help=
                                   "Zero out the cent offset i.e. retune to A440.\n\n")
 
-        video_types = ["main", "backing", "solo", "playthrough"]
-        subparser.add_argument("-V", "--video-type", choices=video_types, default="main", help=
-                               "Type of YouTube video to download (default: main).\n\n")
+        if multidownload:
+            subparser.set_defaults(title=None,
+                                   video_type="main",
+                                   track_index=None)
+        else:
+            subparser.add_argument("-T", "--title", type=str, help=
+                                   "Override the song title.\n\n")
+
+            video_types = ["main", "backing", "solo", "playthrough"]
+            subparser.add_argument("-V", "--video-type", choices=video_types, default="main", help=
+                                   "Type of YouTube video to download (default: main).\n"
+                                   "Must be used with --track-index when video type is not main.\n\n")
+
+            subparser.add_argument("-I", "--track-index", type=int, help=
+                                   "When downloading a video type other than main, specifies the\n"
+                                   "0-based track index (as read from top to bottom on the website)\n"
+                                   "to use for the backing/solo/playthrough video. This is required\n"
+                                   "because each track has different backing/solo/playthrough videos.\n"
+                                   "This must be used with --video-type.\n\n")
 
         subparser.add_argument("-f", "--folder", action="store_true", help=
                                "Save the feedpak as a folder instead of a single file.\n"
@@ -1310,27 +1342,27 @@ async def main():
     parser_download_by_id = subparsers.add_parser("download-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
                                                   "Download and create a feedpak from a Songsterr song ID.\n\n")
     parser_download_by_id.add_argument("song_id", type=int, help="Songsterr song ID.")
-    add_download_args(parser_download_by_id)
+    add_download_args(parser_download_by_id, multidownload=False)
 
     parser_download = subparsers.add_parser("download", formatter_class=argparse.RawTextHelpFormatter, help=
                                             "Search Songsterr, and download and create a feedpak from the first result.\n"
                                             "This is a convenience command that combines the search and download-by-id commands.\n\n")
     add_search_args(parser_download)
-    add_download_args(parser_download)
+    add_download_args(parser_download, multidownload=False)
 
     parser_download_list_by_id = subparsers.add_parser("download-list-by-id", formatter_class=argparse.RawTextHelpFormatter, help=
                                                        "Download and create feedpaks for all the songs specified in a text file.\n"
                                                        "The text file should contain one song ID per line.\n\n")
     parser_download_list_by_id.add_argument("input_file", type=str, help="Path to the text file containing song IDs.")
     add_download_list_args(parser_download_list_by_id)
-    add_download_args(parser_download_list_by_id)
+    add_download_args(parser_download_list_by_id, multidownload=True)
 
     parser_download_list = subparsers.add_parser("download-list", formatter_class=argparse.RawTextHelpFormatter, help=
                                                  "Search Songsterr, and download and create feedpaks for all the songs specified in a text file.\n"
                                                  "The text file should contain one search query per line.\n")
     parser_download_list.add_argument("input_file", type=str, help="Path to the text file containing search queries.")
     add_download_list_args(parser_download_list)
-    add_download_args(parser_download_list)
+    add_download_args(parser_download_list, multidownload=True)
 
     args = parser.parse_args()
 

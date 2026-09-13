@@ -1043,7 +1043,7 @@ async def download_feedpak(song_id: int,
     songs = await download_songsterr_song(song_id)
     first_attempt = True
     for song in songs:
-        if song.yt_video_type == VideoType.MAIN and video_type == VideoType.MAIN_ALT:
+        if video_type == VideoType.MAIN and song.yt_video_type == VideoType.MAIN_ALT:
             # Allow alternative even if main was requested
             pass
         elif song.yt_video_type != video_type:

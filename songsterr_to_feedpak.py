@@ -1032,6 +1032,7 @@ async def download_feedpak(song_id: int,
                            retune_by_cents: Optional[int]=0,
                            substitute_empty_sections: bool=False,
                            video_type: str=VideoType.MAIN,
+                           title_override: Optional[str]=None,
                            manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
     Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
@@ -1051,6 +1052,9 @@ async def download_feedpak(song_id: int,
         if not first_attempt:
             print(f"Trying next youtube video")
         first_attempt = False
+
+        if title_override is not None:
+            song = song._replace(title=title_override)
 
         # Keep only guitar and bass tracks
         song = song._replace(tracks=[
@@ -1150,6 +1154,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
                                               retune_by_cents=retune_by_cents,
                                               substitute_empty_sections=args.substitute_empty_sections,
                                               video_type=video_type,
+                                              title_override=args.title,
                                               manifest_extra=manifest_extra)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
@@ -1217,6 +1222,9 @@ async def main():
                                "Include a preview audio clip in the feedpak.\n"
                                "Note that FeedBack already has a built-in option to generate a preview\n"
                                "which will likely give better results than this option.\n\n")
+
+        subparser.add_argument("-T", "--title", type=str, help=
+                               "Override the song title.\n\n")
 
         retune_group = subparser.add_mutually_exclusive_group()
         retune_group.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help=

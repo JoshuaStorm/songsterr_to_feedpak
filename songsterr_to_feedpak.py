@@ -1160,6 +1160,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
 
     # Add custom metadata for debugging and tracing purposes
     cmdline = dict(vars(args))
+    cmdline.pop("query", None)
     cmdline.pop("output", None)
     cmdline.pop("artist_folder", None)
     cmdline.pop("remove_existing", None)

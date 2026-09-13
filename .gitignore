@@ -1,0 +1,4 @@
+env/
+*.feedpak
+*.sloppak
+*disregard*

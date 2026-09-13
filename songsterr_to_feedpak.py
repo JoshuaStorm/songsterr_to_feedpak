@@ -225,7 +225,10 @@ class _SongData(NamedTuple):
 
 def _extract_song_data(html_text: str) -> _SongData:
     soup = bs4.BeautifulSoup(html_text, "html.parser")
-    j = soup.find(id="state").text
+    state = soup.find(id="state")
+    if state is None:
+        raise ValueError("Could not find state in HTML")
+    j = state.text
     data = json.loads(j)["meta"]["current"]
     return _SongData(
         song_id=data["songId"],

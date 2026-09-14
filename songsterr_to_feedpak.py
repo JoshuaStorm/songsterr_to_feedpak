@@ -567,6 +567,17 @@ def _iterate_measures(measures: list) -> Generator[tuple[dict, bool], None, None
     wildcard = object()
     current_alternate_endings = set([wildcard])
     alternate_endings = []
+
+    def finish_repeat(repeat_count: int):
+        nonlocal i, current_alternate_endings, alternate_endings
+        for repeat_number in range(1, repeat_count + 1):
+            for j, cur_ae in enumerate(alternate_endings):
+                if next(iter(cur_ae)) is wildcard or repeat_number in cur_ae:
+                    yield measures[i - len(alternate_endings) + j + 1], repeat_number > 1
+
+        current_alternate_endings = set([wildcard])
+        alternate_endings = []
+
     while i < len(measures):
         measure = measures[i]
 
@@ -580,14 +591,10 @@ def _iterate_measures(measures: list) -> Generator[tuple[dict, bool], None, None
             yield measure, False
 
         if "repeat" in measure:
-            repeat_count = measure["repeat"]
-            for repeat_number in range(1, repeat_count + 1):
-                for j, cur_ae in enumerate(alternate_endings):
-                    if next(iter(cur_ae)) is wildcard or repeat_number in cur_ae:
-                        yield measures[i - len(alternate_endings) + j + 1], repeat_number > 1
-
-            current_alternate_endings = set([wildcard])
-            alternate_endings = []
+            yield from finish_repeat(measure["repeat"])
+        elif i + 1 >= len(measures) and alternate_endings:
+            # Score incorrectly started a repeat but never ended it.
+            yield from finish_repeat(1)
         i += 1
 
 class MeasureInfo(NamedTuple):

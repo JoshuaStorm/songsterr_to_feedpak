@@ -956,6 +956,7 @@ class _ArrangementInfo:
 def build_feedpak(song: SongsterrSong,
                   mp3: Mp3,
                   substitute_empty_sections: bool=False,
+                  json_indent: Optional[int]=None,
                   manifest_extra: Optional[dict[str, object]]=None) -> dict[str, Union[str, bytes]]:
     files = {}
     manifest = build_feedpak_manifest(song, mp3)
@@ -973,7 +974,7 @@ def build_feedpak(song: SongsterrSong,
                                              Instrument.get(track.instrument, track.name)))
         if i == 0:
             song_timeline = cur_song_timeline
-    files[_get_song_timeline_filename()] = json.dumps(song_timeline)
+    files[_get_song_timeline_filename()] = json.dumps(song_timeline, indent=json_indent)
 
     if substitute_empty_sections:
         for section_number in reversed(range(len(arrangements[0].section_info))):
@@ -1040,7 +1041,7 @@ def build_feedpak(song: SongsterrSong,
             generate_feedpak_arrangement_anchors(arrangement.arrangement)
 
     for track, arrangement in zip(song.tracks, arrangements):
-        files[_get_arrangement_filename(track)] = json.dumps(arrangement.arrangement)
+        files[_get_arrangement_filename(track)] = json.dumps(arrangement.arrangement, indent=json_indent)
 
     files[_get_stem_filename(song)] = mp3.data
     if mp3.thumbnail:
@@ -1057,6 +1058,7 @@ async def download_feedpak(song_id: int,
                            video_type: str=VideoType.MAIN,
                            track_index_for_video_type: int=0,
                            title_override: Optional[str]=None,
+                           json_indent: Optional[int]=None,
                            manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
     Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
@@ -1121,6 +1123,7 @@ async def download_feedpak(song_id: int,
         feedpak = build_feedpak(song,
                                 mp3,
                                 substitute_empty_sections=substitute_empty_sections,
+                                json_indent=json_indent,
                                 manifest_extra=manifest_extra)
         return song, mp3, feedpak
 
@@ -1189,6 +1192,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
                                               video_type=video_type,
                                               track_index_for_video_type=args.track_index or 0,
                                               title_override=args.title,
+                                              json_indent=args.json_indent,
                                               manifest_extra=manifest_extra)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
@@ -1335,6 +1339,10 @@ async def main():
                                "When writing a file (no -f) to a location where a file already exists, the existing file\n"
                                "will be overwritten even without this option. This option is intended for switching between\n"
                                "the file and folder formats and for cleaning out old folders.\n\n")
+
+        subparser.add_argument("-j", "--json-indent", type=int, help=
+                               "The number of spaces to use for indentation when serialising to JSON (default: None).\n"
+                               "Useful for readability during debugging.\n\n")
 
     def add_download_list_args(subparser: argparse.ArgumentParser):
         subparser.add_argument("-w", "--worker-count", type=int, default=10, help=

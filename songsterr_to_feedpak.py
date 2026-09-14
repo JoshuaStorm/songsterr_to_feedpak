@@ -861,7 +861,7 @@ def generate_feedpak_arrangement_anchors(arrangement: dict):
                 anchor_min_fret = req_anchor_min_fret
                 anchor_max_fret = max(req_anchor_max_fret, req_anchor_min_fret + CONFIG_ANCHOR_MIN_WIDTH - 1)
                 anchors.append({
-                    "time": t,
+                    "time": t - 0.001, # Slightly before to prevent visual glitches on open notes
                     "fret": anchor_min_fret,
                     "width": anchor_max_fret - anchor_min_fret + 1,
                 })

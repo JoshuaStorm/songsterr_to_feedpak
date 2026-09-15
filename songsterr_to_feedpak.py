@@ -171,18 +171,6 @@ class Tuning:
     def add_semitones(self, semitones: int) -> "Tuning":
         return Tuning([n + semitones for n in self.strings])
 
-# 8-string E standard tuning.
-# Note that notes are written an octave higher than they actually sound.
-Tuning.E_STD8 = Tuning([64, 59, 55, 50, 45, 40, 35, 30])
-
-def _tuning_subtract(lhs: Tuning, rhs: Tuning) -> list[int]:
-    """
-    Subtract two tunings to get the semitone deltas between them.
-    If the tunings have different numbers of strings, only the common bottom strings are compared.
-    """
-    cmp_len = min(len(lhs.strings), len(rhs.strings))
-    return [l - r for l, r in zip(lhs.strings[:cmp_len], rhs.strings[:cmp_len])]
-
 ################################################################
 # Songsterr web API
 ################################################################
@@ -216,7 +204,8 @@ class _SongData(NamedTuple):
     revision: int
     image: str
     names: list[str]
-    instruments: list[str]
+    instruments: list[int]
+    instrument_names: list[str]
     track_difficulties: list[Optional[int]]
     track_hashes: list[str]
     tags: list[str]
@@ -224,6 +213,20 @@ class _SongData(NamedTuple):
     title: str
 
 def _extract_song_data(html_text: str) -> _SongData:
+    def get_instrument(track: dict) -> str:
+        if track.get("isVocalTrack"):
+            return Instrument.VOCALS
+        elif track.get("isDrums"):
+            return Instrument.DRUMS
+        elif track.get("isBassGuitar"):
+            return Instrument.BASS
+        elif track.get("isGuitar"):
+            return Instrument.GUITAR
+        elif track.get("isPiano"):
+            return Instrument.PIANO
+        else:
+            return Instrument.NONE
+
     soup = bs4.BeautifulSoup(html_text, "html.parser")
     state = soup.find(id="state")
     if state is None:
@@ -235,7 +238,8 @@ def _extract_song_data(html_text: str) -> _SongData:
         revision=data["revisionId"],
         image=data["image"],
         names=[t["name"] for t in data["tracks"]],
-        instruments=[t["instrument"] for t in data["tracks"]],
+        instruments=[get_instrument(t) for t in data["tracks"]],
+        instrument_names=[t["instrument"] for t in data["tracks"]],
         track_difficulties=[t.get("difficulty") for t in data["tracks"]],
         track_hashes=[t["hash"] for t in data["tracks"]],
         tags=data["tags"],
@@ -309,41 +313,23 @@ def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
     return sorted(video_sync_data, key=lambda v: order.index(v.video_type))
 
 class Instrument:
-    VOCALS = "vocals"
-    RHYTHM_GUITAR = "rhythm_guitar"
-    LEAD_GUITAR = "lead_guitar"
-    BASS = "bass"
-    OTHER = "other"
-
-    @staticmethod
-    def get(instrument: str, track_name: str) -> str:
-        def match(word: str) -> bool:
-            return (re.search(f"\\b{word}\\b", instrument, flags=re.IGNORECASE)
-                 or re.search(f"\\b{word}\\b", track_name, flags=re.IGNORECASE))
-
-        if match("vocals") or match("voice"):
-            return Instrument.VOCALS
-        elif match("lead") or match("solo"):
-            return Instrument.LEAD_GUITAR
-        elif match("rhythm") or match("guitar"):
-            return Instrument.RHYTHM_GUITAR
-        elif match("bass"):
-            return Instrument.BASS
-        else:
-            return Instrument.OTHER
-
-    @staticmethod
-    def is_guitar_or_bass(instrument: str, track_name: str) -> bool:
-        return Instrument.get(instrument, track_name) in (Instrument.RHYTHM_GUITAR, Instrument.LEAD_GUITAR, Instrument.BASS)
+    NONE = 0
+    GUITAR = 1 << 1
+    RHYTHM_GUITAR = 1 << 2
+    LEAD_GUITAR = 1 << 3
+    BASS = 1 << 4
+    DRUMS = 1 << 5
+    PIANO = 1 << 6
+    VOCALS = 1 << 7
 
 class SongsterrTrackSearchResult(NamedTuple):
     name: str
-    instrument: str
+    instrument_name: str
     tuning: Optional[Tuning]
     difficulty: Optional[int]
 
     def get_name(self) -> str:
-        return self.name or self.instrument
+        return self.name or self.instrument_name
 
 class SongsterrSongSearchResult(NamedTuple):
     title: str
@@ -359,7 +345,7 @@ def _extract_songsterr_search_results(json_text: str) -> list[SongsterrSongSearc
         for track in result["tracks"]:
             tracks.append(SongsterrTrackSearchResult(
                 name=track["name"],
-                instrument=track["instrument"],
+                instrument_name=track["instrument"],
                 tuning=Tuning(track["tuning"]) if track.get("tuning") else None,
                 difficulty=track.get("difficulty"),
             ))
@@ -374,7 +360,8 @@ def _extract_songsterr_search_results(json_text: str) -> list[SongsterrSongSearc
 class SongsterrTrack(NamedTuple):
     track_id: int
     name: str
-    instrument: str
+    instrument: int
+    instrument_name: str
     tuning: Optional[Tuning]
     capo: int
     difficulty: Optional[int]
@@ -383,7 +370,7 @@ class SongsterrTrack(NamedTuple):
     cent_offset: int
 
     def get_name(self) -> str:
-        return self.name or self.instrument
+        return self.name or self.instrument_name
 
 class SongsterrSong(NamedTuple):
     song_id: int
@@ -429,14 +416,25 @@ async def download_songsterr_song(song_id: int) -> list[SongsterrSong]:
         )
         zipped = zip(song_data.names,
                      song_data.instruments,
+                     song_data.instrument_names,
                      song_data.track_difficulties,
                      song_data.track_hashes,
                      track_datas)
-        for i, (name, instrument, track_difficulty, track_hash, track_data) in enumerate(zipped):
+        for i, (name, instrument, instrument_name, track_difficulty, track_hash, track_data) in enumerate(zipped):
+            if instrument & Instrument.GUITAR:
+                def match(keyword: str) -> bool:
+                    return (re.search(f"\\b{keyword}\\b", name, flags=re.IGNORECASE)
+                        or re.search(f"\\b{keyword}\\b", instrument_name, flags=re.IGNORECASE))
+                if match("lead") or match("solo"):
+                    instrument |= Instrument.LEAD_GUITAR
+                if match("rhythm"):
+                    instrument |= Instrument.RHYTHM_GUITAR
+
             song.tracks.append(SongsterrTrack(
                 track_id=i,
                 name=name,
                 instrument=instrument,
+                instrument_name=instrument_name,
                 tuning=track_data.tuning,
                 difficulty=track_difficulty,
                 track_hash=track_hash,
@@ -558,6 +556,15 @@ def _get_cover_filename() -> str:
 
 def _get_preview_filename() -> str:
     return "preview.mp3"
+
+def build_feedpak_tuning(tuning: Tuning, is_bass: bool) -> list[int]:
+    e_std8 = [64, 59, 55, 50, 45, 40, 35, 30]
+    bottom_string = 2 if len(tuning.strings) < 6 else 0
+    subend = e_std8[bottom_string:bottom_string + len(tuning.strings)]
+    diff = [s - e for s, e in zip(tuning.strings, subend)]
+    if is_bass:
+        diff = [d + 12 for d in diff]
+    return list(reversed(diff))
 
 def _iterate_measures(measures: list) -> Generator[tuple[dict, bool], None, None]:
     """
@@ -803,7 +810,7 @@ def build_feedpak_arrangement(song: SongsterrSong, track: SongsterrTrack) -> tup
 
     arrangement = {
         "name": track.get_name(),
-        "tuning": _tuning_subtract(track.tuning, Tuning.E_STD8),
+        "tuning": build_feedpak_tuning(track.tuning, track.instrument & Instrument.BASS),
         "capo": track.capo,
         "notes": fp_notes,
         "chords": fp_chords,
@@ -868,6 +875,13 @@ def generate_feedpak_arrangement_anchors(arrangement: dict):
     arrangement["anchors"] = anchors
 
 def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
+    def get_instrument_type(instrument: int) -> Optional[str]:
+        if instrument & Instrument.GUITAR:
+            return "guitar"
+        elif instrument & Instrument.BASS:
+            return "bass"
+        return None
+
     manifest = {
         "feedpak_version": "1.0.0",
         "title": song.title,
@@ -879,9 +893,10 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
                 "id": f"{track.track_id} - {_to_valid_filename(track.get_name())}",
                 "name": track.get_name(),
                 "file": _get_arrangement_filename(track),
-                "tuning": _tuning_subtract(track.tuning, Tuning.E_STD8),
+                "type": get_instrument_type(track.instrument),
+                "tuning": build_feedpak_tuning(track.tuning, track.instrument & Instrument.BASS),
                 "capo": track.capo,
-                "centOffset": track.cent_offset,
+                "centOffset": track.cent_offset + (-1200 if track.instrument & Instrument.BASS else 0),
             } for track in song.tracks
         ],
         "stems": [{
@@ -912,7 +927,7 @@ def build_zip(files: dict[str, Union[str, bytes]]) -> bytes:
     return zip_buffer.getvalue()
 
 class _ArrangementInfo:
-    def __init__(self, arrangement: dict, measure_info: list[MeasureInfo], section_info: list[SectionInfo], instrument: str):
+    def __init__(self, arrangement: dict, measure_info: list[MeasureInfo], section_info: list[SectionInfo], instrument: int):
         self.arrangement = arrangement
         self.measure_info = measure_info
         self.section_info = section_info
@@ -971,7 +986,7 @@ def build_feedpak(song: SongsterrSong,
         arrangements.append(_ArrangementInfo(arrangement,
                                              measure_info,
                                              section_info,
-                                             Instrument.get(track.instrument, track.name)))
+                                             track.instrument))
         if i == 0:
             song_timeline = cur_song_timeline
     files[_get_song_timeline_filename()] = json.dumps(song_timeline, indent=json_indent)
@@ -1010,20 +1025,17 @@ def build_feedpak(song: SongsterrSong,
                     continue
 
                 # Find suitable substitute arrangement
-                def create_find_active_fn(instrument: str) -> Callable[[_ArrangementInfo], bool]:
-                    return (lambda a: a.instrument == instrument
+                def create_find_active_fn(instrument: int) -> Callable[[_ArrangementInfo], bool]:
+                    return (lambda a: (a.instrument & instrument)
                                   and a.arrangement["tuning"] == arrangement.arrangement["tuning"]
                                   and a.arrangement["capo"] == arrangement.arrangement["capo"]
                                   and a.get_section_note_and_chord_count(section_number) > 0)
                 sorted_arrangements = sorted(arrangements, key=lambda a: a.get_section_note_and_chord_count(section_number), reverse=True)
                 active = _list_find(sorted_arrangements, create_find_active_fn(arrangement.instrument))
                 if not active:
-                    if arrangement.instrument == Instrument.LEAD_GUITAR:
-                        active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.RHYTHM_GUITAR))
-                    elif arrangement.instrument == Instrument.RHYTHM_GUITAR:
-                        active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.LEAD_GUITAR))
-                if not active:
-                    continue
+                    active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.GUITAR))
+                    if not active:
+                        continue
 
                 # Insert notes from the active arrangement
                 copy_measure_index = section_info.measure_index + (CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES * start_has_notes)
@@ -1086,7 +1098,7 @@ async def download_feedpak(song_id: int,
         # Keep only guitar and bass tracks
         song = song._replace(tracks=[
             track for track in song.tracks
-            if Instrument.is_guitar_or_bass(track.instrument, track.name) and track.tuning
+            if ((track.instrument & Instrument.GUITAR) or (track.instrument & Instrument.BASS)) and track.tuning
         ])
 
         # Retune tracks
@@ -1141,9 +1153,8 @@ async def _handle_search(args: argparse.Namespace) -> list[SongsterrSongSearchRe
     for result in results:
         print(f"  - {result.title} by {result.artist} (ID: {result.song_id})")
         for track in result.tracks:
-            if Instrument.is_guitar_or_bass(track.instrument, track.name):
-                tuning_name = f" ({track.tuning.name})" if track.tuning else ""
-                print(f"    - {track.get_name()}{tuning_name}")
+            tuning_name = f" ({track.tuning.name})" if track.tuning else ""
+            print(f"    - {track.get_name()}{tuning_name}")
     return results
 
 async def _handle_download_by_id(args: argparse.Namespace):

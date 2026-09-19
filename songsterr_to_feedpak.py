@@ -1039,10 +1039,10 @@ def build_feedpak(song: SongsterrSong,
                                   and a.get_section_note_and_chord_count(section_number) > 0)
                 sorted_arrangements = sorted(arrangements, key=lambda a: a.get_section_note_and_chord_count(section_number), reverse=True)
                 active = _list_find(sorted_arrangements, create_find_active_fn(arrangement.instrument))
-                if not active:
+                if not active and (arrangement.instrument & Instrument.GUITAR):
                     active = _list_find(sorted_arrangements, create_find_active_fn(Instrument.GUITAR))
-                    if not active:
-                        continue
+                if not active:
+                    continue
 
                 # Insert notes from the active arrangement
                 copy_measure_index = section_info.measure_index + (CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES * start_has_notes)

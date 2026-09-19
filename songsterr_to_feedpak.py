@@ -1241,6 +1241,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
     manifest_extra = {
         "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
         "songsterr_to_feedpak_cmdline": cmdline,
+        "songsterr_to_feedpak_credits": "Created with https://github.com/kevlu123/songsterr_to_feedpak",
     }
 
     song, mp3, feedpak = await download_feedpak(args.song_id,

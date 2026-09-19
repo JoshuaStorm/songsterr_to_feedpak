@@ -42,6 +42,8 @@ CONFIG_SUBSTITUTE_EMPTY_SECTION_MARGIN_MEASURES = 2
 # Utilities
 ################################################################
 
+_INVALID_FILENAME_CHARS = '<>:"/\\|?*' + ''.join(chr(i) for i in range(32))
+
 def get_note_name(note: int, use_sharps: bool=False) -> str:
     """
     Get the name of a note.
@@ -117,11 +119,29 @@ def _cents_improper_to_mixed(cents: int) -> tuple[int, int]:
 
 def _to_valid_filename(name: str) -> str:
     """
-    Convert a string to a valid filename by filtering invalid characters.
+    Convert a string to a valid filename, using Windows as the common denominator.
     """
+
+    # Replace pipes with dashes for style purposes
     name = name.replace("|", "-")
-    s = "".join(c for c in name if c.isalnum() or c in " ._-").strip()
+
+    # Remove invalid characters
+    s = "".join(c for c in name if c not in _INVALID_FILENAME_CHARS).strip()
+
+    # Fix up reserved names
+    no_ext = s.split('.')[0].upper()
+    if re.match(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$', no_ext):
+        s = "_" + s
+
+    # Fix up trailing dots (spaces are already stripped)
+    while s.endswith("."):
+        s = s[:-1]
+
+    # Fix up empty names
     return s or "file"
+
+def _sign_string(x: int) -> str:
+    return f"+{x}" if x > 0 else str(x)
 
 ################################################################
 # Tuning
@@ -457,6 +477,7 @@ class Mp3(NamedTuple):
     duration: float
     thumbnail: Optional[bytes]
     preview: Optional[bytes]
+    retuned_by_cents: int
 
 def has_ffmpeg() -> bool:
     return shutil.which("ffmpeg") is not None
@@ -542,7 +563,11 @@ async def download_youtube_mp3(video_id: str,
                 preview = None
 
             with open(tmp_file, 'rb') as f:
-                return Mp3(data=f.read(), duration=duration, thumbnail=thumbnail, preview=preview)
+                return Mp3(data=f.read(),
+                           duration=duration,
+                           thumbnail=thumbnail,
+                           preview=preview,
+                           retuned_by_cents=retune_by_cents)
     return await asyncio.to_thread(work)
 
 ################################################################
@@ -881,6 +906,20 @@ def generate_feedpak_arrangement_anchors(arrangement: dict):
                 })
     arrangement["anchors"] = anchors
 
+def _get_title_retune_suffix(mp3: Mp3) -> str:
+    if mp3.retuned_by_cents == 0:
+        return ""
+
+    semitones, cents = _cents_improper_to_mixed(mp3.retuned_by_cents)
+    if semitones == 0:
+        return f" ({_sign_string(cents)}c)"
+
+    steps_str = "step" if abs(semitones) == 1 else "steps"
+    if cents == 0:
+        return f" ({_sign_string(semitones)} {steps_str})"
+    else:
+        return f" ({_sign_string(semitones)} {steps_str}, {_sign_string(cents)}c)"
+
 def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
     def get_instrument_type(instrument: int) -> Optional[str]:
         if instrument & Instrument.GUITAR:
@@ -891,7 +930,7 @@ def build_feedpak_manifest(song: SongsterrSong, mp3: Mp3) -> dict:
 
     manifest = {
         "feedpak_version": "1.0.0",
-        "title": song.title,
+        "title": song.title + _get_title_retune_suffix(mp3),
         "artist": song.artist,
         "duration": mp3.duration,
         "song_timeline": _get_song_timeline_filename(),
@@ -1072,7 +1111,7 @@ def build_feedpak(song: SongsterrSong,
 async def download_feedpak(song_id: int,
                            include_thumbnail: bool=False,
                            include_preview: bool=False,
-                           retune_by_cents: Optional[int]=0,
+                           retune_by_cents: int=0,
                            zero_cents: bool=False,
                            substitute_empty_sections: bool=False,
                            video_type: str=VideoType.MAIN,
@@ -1196,21 +1235,21 @@ async def _handle_download_by_id(args: argparse.Namespace):
         "songsterr_to_feedpak_cmdline": cmdline,
     }
 
-    song, _, feedpak = await download_feedpak(args.song_id,
-                                              include_thumbnail=args.thumbnail,
-                                              include_preview=args.preview,
-                                              retune_by_cents=args.retune_by,
-                                              zero_cents=args.zero_cents,
-                                              substitute_empty_sections=args.substitute_empty_sections,
-                                              video_type=video_type,
-                                              track_index_for_video_type=args.track_index or 0,
-                                              title_override=args.title,
-                                              json_indent=args.json_indent,
-                                              manifest_extra=manifest_extra,
-                                              mock_mp3_path=args.mp3)
+    song, mp3, feedpak = await download_feedpak(args.song_id,
+                                               include_thumbnail=args.thumbnail,
+                                               include_preview=args.preview,
+                                               retune_by_cents=args.retune_by,
+                                               zero_cents=args.zero_cents,
+                                               substitute_empty_sections=args.substitute_empty_sections,
+                                               video_type=video_type,
+                                               track_index_for_video_type=args.track_index or 0,
+                                               title_override=args.title,
+                                               json_indent=args.json_indent,
+                                               manifest_extra=manifest_extra,
+                                               mock_mp3_path=args.mp3)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
-    default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
+    default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}{_get_title_retune_suffix(mp3)}.feedpak")
     if args.output:
         if os.path.isdir(args.output):
             feedpak_dst = os.path.join(args.output, artist_dir, default_filename)

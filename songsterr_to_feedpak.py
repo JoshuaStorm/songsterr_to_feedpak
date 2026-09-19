@@ -1073,6 +1073,7 @@ async def download_feedpak(song_id: int,
                            include_thumbnail: bool=False,
                            include_preview: bool=False,
                            retune_by_cents: Optional[int]=0,
+                           zero_cents: bool=False,
                            substitute_empty_sections: bool=False,
                            video_type: str=VideoType.MAIN,
                            track_index_for_video_type: int=0,
@@ -1113,20 +1114,14 @@ async def download_feedpak(song_id: int,
         cent_offsets = []
         for j, track in enumerate(song.tracks):
             cent_offsets.append(track.cent_offset)
-            if retune_by_cents is None:
-                # Auto-zero out the cent offset
-                retune_semitones = 0
-                retune_cents = 0
-            else:
-                retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
-
+            retune_semitones, retune_cents = _cents_improper_to_mixed(retune_by_cents + track.cent_offset)
             new_track = track._replace(
                 tuning=track.tuning.add_semitones(retune_semitones),
                 cent_offset=retune_cents,
             )
             song.tracks[j] = new_track
-        if retune_by_cents is None:
-            retune_by_cents = -_mode(cent_offsets)
+        if zero_cents:
+            retune_by_cents -= _mode(cent_offsets)
 
         # Download MP3
         try:
@@ -1175,9 +1170,6 @@ async def _handle_download_by_id(args: argparse.Namespace):
     if (args.retune_by or args.zero_cents) and not has_ffmpeg_rubberband_filter():
         raise RuntimeError("Retuning requires ffmpeg with the rubberband filter installed")
 
-    # retune_by_cents=None means zero out the cent offset
-    retune_by_cents = None if args.zero_cents else args.retune_by
-
     if args.video_type != "main" and args.track_index is None:
         raise ValueError("Must specify --track-index when using --video-type other than 'main'")
     elif args.video_type == "main" and args.track_index is not None:
@@ -1207,7 +1199,8 @@ async def _handle_download_by_id(args: argparse.Namespace):
     song, _, feedpak = await download_feedpak(args.song_id,
                                               include_thumbnail=args.thumbnail,
                                               include_preview=args.preview,
-                                              retune_by_cents=retune_by_cents,
+                                              retune_by_cents=args.retune_by,
+                                              zero_cents=args.zero_cents,
                                               substitute_empty_sections=args.substitute_empty_sections,
                                               video_type=video_type,
                                               track_index_for_video_type=args.track_index or 0,
@@ -1324,12 +1317,12 @@ async def main():
                                "Note that FeedBack already has a built-in option to generate a preview\n"
                                "which will likely give better results than this option.\n\n")
 
-        retune_group = subparser.add_mutually_exclusive_group()
-        retune_group.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help=
+        subparser.add_argument("-r", "--retune-by", metavar="CENTS", type=int, default=0, help=
                                   "Change the audio pitch by the given number of cents (1 semitone=100 cents).\n\n")
 
-        retune_group.add_argument("-z", "--zero-cents", action="store_true", help=
-                                  "Zero out the cent offset i.e. retune to A440.\n\n")
+        subparser.add_argument("-z", "--zero-cents", action="store_true", help=
+                                  "Zero out the cent offset i.e. retune to A440.\n"
+                                  "This is heuristically detected.\n\n")
 
         if multidownload:
             subparser.set_defaults(title=None,

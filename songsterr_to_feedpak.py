@@ -475,7 +475,8 @@ def has_ffmpeg_rubberband_filter():
 async def download_youtube_mp3(video_id: str,
                                include_thumbnail: bool=False,
                                include_preview: bool=False,
-                               retune_by_cents: int=0) -> Mp3:
+                               retune_by_cents: int=0,
+                               mock_mp3_path: Optional[str]=None) -> Mp3:
     def work():
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_file =  os.path.join(tmp_dir, video_id)
@@ -492,14 +493,20 @@ async def download_youtube_mp3(video_id: str,
 
             print(f"==== BEGIN YOUTUBE DOWNLOAD {video_id} ====")
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                if mock_mp3_path:
                     if include_thumbnail:
-                        info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
-                        thumbnail_url = info.get('thumbnail')
-                        thumbnail = asyncio.run(_fetch_bytes(thumbnail_url) if thumbnail_url else None)
-                    else:
-                        ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
-                        thumbnail = None
+                        raise ValueError("thumbnail not supported for mock mp3")
+                    shutil.copy(mock_mp3_path, tmp_file)
+                    thumbnail = None
+                else:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        if include_thumbnail:
+                            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=True)
+                            thumbnail_url = info.get('thumbnail')
+                            thumbnail = asyncio.run(_fetch_bytes(thumbnail_url) if thumbnail_url else None)
+                        else:
+                            ydl.download([f'https://www.youtube.com/watch?v={video_id}'])
+                            thumbnail = None
             except Exception as e:
                 raise YoutubeDownloadError(f"Failed to download YouTube video {video_id}: {e}") from e
             finally:
@@ -1071,7 +1078,8 @@ async def download_feedpak(song_id: int,
                            track_index_for_video_type: int=0,
                            title_override: Optional[str]=None,
                            json_indent: Optional[int]=None,
-                           manifest_extra: Optional[dict[str, object]]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
+                           manifest_extra: Optional[dict[str, object]]=None,
+                           mock_mp3_path: Optional[str]=None) -> tuple[SongsterrSong, Mp3, dict[str, Union[str, bytes]]]:
     """
     Download a Songsterr song, corresponding MP3 from YouTube, and create a feedpak.
     Returns a dictionary of files that can be used to construct a zip file or directory.
@@ -1125,7 +1133,8 @@ async def download_feedpak(song_id: int,
             mp3 = await download_youtube_mp3(song.yt_video_id,
                                              include_thumbnail=include_thumbnail,
                                              include_preview=include_preview,
-                                             retune_by_cents=retune_by_cents)
+                                             retune_by_cents=retune_by_cents,
+                                             mock_mp3_path=mock_mp3_path)
         except YoutubeDownloadError as e:
             if not exc:
                 exc = e
@@ -1204,7 +1213,8 @@ async def _handle_download_by_id(args: argparse.Namespace):
                                               track_index_for_video_type=args.track_index or 0,
                                               title_override=args.title,
                                               json_indent=args.json_indent,
-                                              manifest_extra=manifest_extra)
+                                              manifest_extra=manifest_extra,
+                                              mock_mp3_path=args.mp3)
 
     artist_dir = _to_valid_filename(song.artist) if args.artist_folder else "."
     default_filename = _to_valid_filename(f"{song.artist} - {song.title} - {song.song_id}.feedpak")
@@ -1354,6 +1364,11 @@ async def main():
         subparser.add_argument("-j", "--json-indent", type=int, help=
                                "The number of spaces to use for indentation when serialising to JSON (default: None).\n"
                                "Useful for readability during debugging.\n\n")
+
+        subparser.add_argument("-m", "--mp3", type=str, help=
+                               "Use a locally stored MP3 file to mock downloading from YouTube.\n"
+                               "This is intended for development purposes to prevent being flagged by YouTube for\n"
+                               "constantly downloading videos.\n\n")
 
     def add_download_list_args(subparser: argparse.ArgumentParser):
         subparser.add_argument("-w", "--worker-count", type=int, default=10, help=

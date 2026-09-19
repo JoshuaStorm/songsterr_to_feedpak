@@ -1,9 +1,9 @@
 # Copyright (c) 2026 Kevin Lu
 
-import traceback
 from typing import Awaitable, Callable, Generator, Optional, Union, NamedTuple
 import argparse
 import asyncio
+import contextlib
 import copy
 import io
 import json
@@ -12,7 +12,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import traceback
 import zipfile
 
 # External dependencies
@@ -247,6 +249,8 @@ def _extract_song_data(html_text: str) -> _SongData:
         else:
             return Instrument.NONE
 
+    if "Too Many Requests" in html_text:
+        raise ValueError("Songsterr API rate limit exceeded.")
     soup = bs4.BeautifulSoup(html_text, "html.parser")
     state = soup.find(id="state")
     if state is None:
@@ -301,6 +305,8 @@ class VideoType:
 
 def _extract_video_sync_data(json_text: str) -> list[_VideoSyncData]:
     videos = json.loads(json_text)
+    if "code" in videos and videos["code"] == "ERR_TOO_MANY_REQUESTS":
+        raise ValueError("Songsterr API rate limit exceeded.")
     if videos is None:
         return []
 
@@ -1283,7 +1289,7 @@ async def _handle_download(args: argparse.Namespace):
     args.song_id = results[0].song_id
     await _handle_download_by_id(args)
 
-async def _run_parallel_download(work: tuple[list[Callable[[], Awaitable[None]]], str],
+async def _run_parallel_download(work: list[Callable[[], Awaitable[None]]],
                                  worker_count: int) -> list:
     """
     Execute a list of async work while limiting the number of concurrent workers.
@@ -1292,38 +1298,71 @@ async def _run_parallel_download(work: tuple[list[Callable[[], Awaitable[None]]]
     """
     semaphore = asyncio.Semaphore(worker_count)
 
-    async def do_work(fn: Callable[[], object], name: str):
+    async def do_work(index: int, fn: Callable[[], object]):
         async with semaphore:
-            try:
-                await fn()
-            except Exception as e:
-                print(f"{name} failed: {e}")
-                traceback.print_exc()
+            # Stagger work to mitigate rate limiting errors
+            if index < worker_count:
+                await asyncio.sleep(index)
+            await fn()
 
-    tasks = [asyncio.create_task(do_work(w[0], w[1])) for w in work]
+    tasks = [asyncio.create_task(do_work(i, w)) for i, w in enumerate(work)]
     await asyncio.gather(*tasks)
 
 async def _handle_download_list_by_id(args: argparse.Namespace):
     with open(args.input_file, 'r') as f:
         song_ids = [int(line.strip()) for line in f if line.strip()]
 
-    work = []
-    for song_id in song_ids:
-        args_copy = copy.deepcopy(args)
-        args_copy.song_id = song_id
-        work.append((lambda a=args_copy: _handle_download_by_id(a), f"Download {song_id}"))
-    await _run_parallel_download(work, args.worker_count)
+    with (open(args.log, 'w') if args.log else contextlib.nullcontext()) as log_file:
+        work = []
+        for song_id in song_ids:
+            args_copy = copy.deepcopy(args)
+            args_copy.song_id = song_id
+
+            async def work_fn(a=args_copy):
+                try:
+                    await _handle_download_by_id(a)
+                except Exception as e:
+                    print(f"Download {a.song_id} failed: {e}")
+                    traceback.print_exc()
+                    if log_file:
+                        log_file.write(f"{a.song_id}: failed - {e}\n")
+                        log_file.write(traceback.format_exc() + "\n")
+                        log_file.flush()
+                else:
+                    if log_file:
+                        log_file.write(f"{a.song_id}: success\n")
+                        log_file.flush()
+
+            work.append(work_fn)
+        await _run_parallel_download(work, args.worker_count)
 
 async def _handle_download_list(args: argparse.Namespace):
     with open(args.input_file, 'r') as f:
         queries = [line.strip() for line in f if line.strip()]
 
-    work = []
-    for query in queries:
-        args_copy = copy.deepcopy(args)
-        args_copy.query = [query]
-        work.append((lambda a=args_copy: _handle_download(a), f"Download {query}"))
-    await _run_parallel_download(work, args.worker_count)
+    with (open(args.log, 'w') if args.log else contextlib.nullcontext()) as log_file:
+        work = []
+        for query in queries:
+            args_copy = copy.deepcopy(args)
+            args_copy.query = [query]
+
+            async def work_fn(a=args_copy):
+                try:
+                    await _handle_download(a)
+                except Exception as e:
+                    print(f"Download {a.query[0]} failed: {e}")
+                    traceback.print_exc()
+                    if log_file:
+                        log_file.write(f"{a.query[0]}: failed - {e}\n")
+                        log_file.write(traceback.format_exc() + "\n")
+                        log_file.flush()
+                else:
+                    if log_file:
+                        log_file.write(f"{a.query[0]}: success\n")
+                        log_file.flush()
+
+            work.append(work_fn)
+        await _run_parallel_download(work, args.worker_count)
 
 async def main():
     def add_search_args(subparser: argparse.ArgumentParser):
@@ -1367,6 +1406,9 @@ async def main():
             subparser.set_defaults(title=None,
                                    video_type="main",
                                    track_index=None)
+
+            subparser.add_argument("-l", "--log", type=str, help=
+                                   "Path to a log file to write the success status of each download.\n\n")
         else:
             subparser.add_argument("-T", "--title", type=str, help=
                                    "Override the song title.\n\n")

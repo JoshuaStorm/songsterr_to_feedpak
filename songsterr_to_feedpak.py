@@ -566,8 +566,8 @@ def _get_preview_filename() -> str:
 
 def build_feedpak_tuning(tuning: Tuning, is_bass: bool) -> list[int]:
     e_std8 = [64, 59, 55, 50, 45, 40, 35, 30]
-    bottom_string = 2 if len(tuning.strings) < 6 else 0
-    subend = e_std8[bottom_string:bottom_string + len(tuning.strings)]
+    bottom_string = 1 if len(tuning.strings) == 5 else 0
+    subend = e_std8[bottom_string:]
     diff = [s - e for s, e in zip(tuning.strings, subend)]
     if is_bass:
         diff = [d + 12 for d in diff]

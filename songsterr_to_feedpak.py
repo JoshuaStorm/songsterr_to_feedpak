@@ -1236,6 +1236,8 @@ async def _handle_download_by_id(args: argparse.Namespace):
     cmdline.pop("remove_existing", None)
     cmdline.pop("input_file", None)
     cmdline.pop("worker_count", None)
+    cmdline.pop("mp3", None)
+    cmdline.pop("log", None)
     manifest_extra = {
         "songsterr_to_feedpak_version": CONFIG_SONGSTERR_TO_FEEDPAK_VERSION,
         "songsterr_to_feedpak_cmdline": cmdline,

@@ -1288,6 +1288,7 @@ async def _handle_download_by_id(args: argparse.Namespace):
     else:
         with open(feedpak_dst, 'wb') as f:
             f.write(build_zip(feedpak))
+    print(f"==== PACKAGED {song.artist} - {song.title} ====")
 
 async def _handle_download(args: argparse.Namespace):
     results = await _handle_search(args)

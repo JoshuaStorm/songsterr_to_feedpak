@@ -53,6 +53,22 @@ class BuildFeedpakTuningTest(unittest.TestCase):
         # E4 B3 G3 D3 A2 D2
         self.assertEqual(stf.build_feedpak_tuning(_tuning([64, 59, 55, 50, 45, 38]), False), [-2, 0, 0, 0, 0, 0])
 
+    def test_guitar_standard_7_string(self):
+        # E4 B3 G3 D3 A2 E2 B1
+        self.assertEqual(stf.build_feedpak_tuning(_tuning([64, 59, 55, 50, 45, 40, 35]), False), [0, 0, 0, 0, 0, 0, 0])
+
+    def test_guitar_drop_a_7_string(self):
+        # E4 B3 G3 D3 A2 E2 A1 (low B dropped to A)
+        self.assertEqual(stf.build_feedpak_tuning(_tuning([64, 59, 55, 50, 45, 40, 33]), False), [-2, 0, 0, 0, 0, 0, 0])
+
+    def test_guitar_standard_8_string(self):
+        # E4 B3 G3 D3 A2 E2 B1 E1
+        self.assertEqual(stf.build_feedpak_tuning(_tuning([64, 59, 55, 50, 45, 40, 35, 30]), False), [0, 0, 0, 0, 0, 0, 0, 0])
+
+    def test_guitar_drop_e_8_string(self):
+        # E4 B3 G3 D3 A2 E2 B1 D1 (low E dropped to D)
+        self.assertEqual(stf.build_feedpak_tuning(_tuning([64, 59, 55, 50, 45, 40, 35, 28]), False), [-2, 0, 0, 0, 0, 0, 0, 0])
+
 
 if __name__ == "__main__":
     unittest.main()

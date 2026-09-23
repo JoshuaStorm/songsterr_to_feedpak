@@ -596,12 +596,26 @@ def _get_preview_filename() -> str:
     return "preview.mp3"
 
 def build_feedpak_tuning(tuning: Tuning, is_bass: bool) -> list[int]:
+    """
+    Convert a tuning to feedpak semitone offsets.
+    Songsterr provides string notes from the highest (thinnest) string to the
+    lowest (thickest). The feedpak tuning is semitone offsets from the
+    instrument's standard open strings, ordered from the lowest string to the
+    highest, so we compare against the standard tuning in the same
+    high-to-low order and reverse the result at the end.
+    """
     e_std8 = [64, 59, 55, 50, 45, 40, 35, 30]
-    bottom_string = 1 if len(tuning.strings) == 5 else 0
-    subend = e_std8[bottom_string:]
-    diff = [s - e for s, e in zip(tuning.strings, subend)]
+    bass_std = {
+        4: [43, 38, 33, 28],
+        5: [43, 38, 33, 28, 23],
+        6: [48, 43, 38, 33, 28, 23],
+    }
     if is_bass:
-        diff = [d + 12 for d in diff]
+        subend = bass_std[len(tuning.strings)]
+    else:
+        bottom_string = 1 if len(tuning.strings) == 5 else 0
+        subend = e_std8[bottom_string:]
+    diff = [s - e for s, e in zip(tuning.strings, subend)]
     return list(reversed(diff))
 
 def _iterate_measures(measures: list) -> Generator[tuple[dict, bool], None, None]:

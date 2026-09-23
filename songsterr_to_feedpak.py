@@ -613,8 +613,7 @@ def build_feedpak_tuning(tuning: Tuning, is_bass: bool) -> list[int]:
     if is_bass:
         subend = bass_std[len(tuning.strings)]
     else:
-        bottom_string = 1 if len(tuning.strings) == 5 else 0
-        subend = e_std8[bottom_string:]
+        subend = e_std8
     diff = [s - e for s, e in zip(tuning.strings, subend)]
     return list(reversed(diff))
 

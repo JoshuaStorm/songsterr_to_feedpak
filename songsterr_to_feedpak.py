@@ -396,6 +396,15 @@ class SongsterrTrack(NamedTuple):
     cent_offset: int
 
     def get_name(self) -> str:
+        # Prefix the instrument type so fee[dB]ack can identify a bass
+        # arrangement from its name (fee[dB]ack falls back to a case-insensitive
+        # "bass" substring match on the arrangement name). When the track has no
+        # name of its own, the instrument name (e.g. "Electric Bass (finger)")
+        # is used as-is and already names the instrument.
+        if self.name and self.instrument & Instrument.BASS:
+            return f"Bass - {self.name}"
+        if self.name and self.instrument & Instrument.GUITAR:
+            return f"Guitar - {self.name}"
         return self.name or self.instrument_name
 
 class SongsterrSong(NamedTuple):

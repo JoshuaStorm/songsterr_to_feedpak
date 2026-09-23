@@ -605,11 +605,6 @@ def build_feedpak_tuning(tuning: Tuning, is_bass: bool) -> list[int]:
     high-to-low order and reverse the result at the end.
     """
     guitar_std8 = [64, 59, 55, 50, 45, 40, 35, 30]
-    # Bass standard tunings, highest string first. A bass with fewer than six
-    # strings drops the high C3 (and a 4-string also drops the low B0), so the
-    # reference is keyed by string count — zip-truncation of a single 6-string
-    # reference would drop the wrong end. Guitar is the opposite: 6/7/8-string
-    # tunings are all prefixes of guitar_std8, so truncation is correct there.
     bass_std = {
         4: [43, 38, 33, 28],
         5: [43, 38, 33, 28, 23],
